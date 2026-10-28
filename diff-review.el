@@ -532,6 +532,7 @@ A file that changed since it was viewed loses its mark."
   "g" #'diff-review-refresh
   "t" #'diff-review-toggle-sidebar)
 
+;;;###autoload
 (define-derived-mode diff-review-mode magit-section-mode "Review"
   "Major mode for a review file: an overview of what a worktree changed.
 \\<diff-review-mode-map>\\[diff-review-open-at-point] shows the file at point in this window,
