@@ -51,16 +51,22 @@ In the overview and the sidebar:
 | `t`   | show or hide the sidebar                 |
 | `q`   | end the review                           |
 
-In a file, `diff-review-file-mode` adds:
+In a file, `diff-review-file-mode` puts its commands under one prefix,
+`diff-review-command-prefix`, `C-c _` by default, so the file's major mode
+keeps its own `C-c` keys:
 
-| Key       | Command                                  |
-|-----------|------------------------------------------|
-| `C-c C-n` `C-c C-p` | next, previous hunk, across files |
-| `C-c C-v` | mark viewed and show the next unviewed   |
-| `C-c C-z` | fold the unchanged lines                 |
-| `C-c C-d` | show or hide the removed lines           |
-| `C-c C-l` | back to the overview                     |
-| `C-c C-q` | end the review                           |
+| Key         | Command                                |
+|-------------|----------------------------------------|
+| `C-c _ n` `C-c _ p` | next, previous hunk, across files |
+| `C-c _ v`   | mark viewed and show the next unviewed |
+| `C-c _ z`   | fold the unchanged lines               |
+| `C-c _ d`   | show or hide the removed lines         |
+| `C-c _ t`   | show or hide the sidebar               |
+| `C-c _ l`   | back to the overview                   |
+| `C-c _ q`   | end the review                         |
+
+Set the prefix with `setopt` or Customize, or `setq` before loading; nil binds no keys at
+all, for binding `diff-review-file-command-map` or the commands yourself.
 
 With Evil, the lists start in normal state and `]]` `[[` walk the files; in a
 file `]c` `[c` walk the hunks, `zv` marks viewed, `zf` folds, `zd` hides the

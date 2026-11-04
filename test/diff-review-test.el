@@ -197,5 +197,26 @@ The repository has two commits and a dirty worktree touching two files."
     (should (= (length diff-review--files) 0))
     (should-error (diff-review-next-file) :type 'user-error)))
 
+;;;; The file keys leave the major mode's alone
+
+(ert-deftest diff-review-test-file-keys-under-the-prefix ()
+  (with-temp-buffer
+    (org-mode)
+    (setq-local diff-review-file-mode t)  ; its keymap active, without a review
+    (should (eq (key-binding (kbd "C-c C-n")) #'org-next-visible-heading))
+    (should (eq (keymap-lookup nil (concat diff-review-command-prefix " n"))
+                #'diff-review-next-hunk))))
+
+(ert-deftest diff-review-test-nil-prefix-binds-nothing ()
+  (let ((prefix diff-review-command-prefix))
+    (unwind-protect
+        (progn
+          (customize-set-variable 'diff-review-command-prefix nil)
+          (should (equal diff-review-file-mode-map '(keymap)))
+          (customize-set-variable 'diff-review-command-prefix "C-c r")
+          (should (eq (keymap-lookup diff-review-file-mode-map "C-c r n")
+                      #'diff-review-next-hunk)))
+      (customize-set-variable 'diff-review-command-prefix prefix))))
+
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here

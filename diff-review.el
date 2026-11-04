@@ -983,16 +983,34 @@ The review buffer must be current."
   (setq diff-review-inline-removed (not diff-review-inline-removed))
   (diff-review--decorate))
 
-(defvar-keymap diff-review-file-mode-map
-  :doc "Keymap for `diff-review-file-mode'."
-  "C-c C-n" #'diff-review-next-hunk
-  "C-c C-p" #'diff-review-previous-hunk
-  "C-c C-v" #'diff-review-viewed-and-next
-  "C-c C-d" #'diff-review-toggle-inline-removed
-  "C-c C-z" #'diff-review-toggle-focus
-  "C-c C-t" #'diff-review-toggle-sidebar
-  "C-c C-l" #'diff-review-overview
-  "C-c C-q" #'diff-review-quit)
+(defvar-keymap diff-review-file-command-map
+  :doc "The commands of `diff-review-file-mode', under `diff-review-command-prefix'."
+  "n" #'diff-review-next-hunk
+  "p" #'diff-review-previous-hunk
+  "v" #'diff-review-viewed-and-next
+  "d" #'diff-review-toggle-inline-removed
+  "z" #'diff-review-toggle-focus
+  "t" #'diff-review-toggle-sidebar
+  "l" #'diff-review-overview
+  "q" #'diff-review-quit)
+
+(defvar diff-review-file-mode-map (make-sparse-keymap)
+  "Keymap for `diff-review-file-mode'.
+It holds `diff-review-file-command-map' under `diff-review-command-prefix'.")
+
+;; A minor mode on the file's own buffer: C-c and a letter or a control
+;; character belong to the user and the major mode, C-c and punctuation to
+;; minor modes, so the commands sit under one such key.
+(defcustom diff-review-command-prefix "C-c _"
+  "Prefix key for the commands of `diff-review-file-mode'.
+Nil binds no keys: bind `diff-review-file-command-map' or the commands
+yourself."
+  :type '(choice (const :tag "No keys" nil) key)
+  :set (lambda (symbol value)
+         (set-default symbol value)
+         (setcdr diff-review-file-mode-map nil)
+         (when value
+           (keymap-set diff-review-file-mode-map value diff-review-file-command-map))))
 
 (define-minor-mode diff-review-file-mode
   "Review decorations and keys in a file of a review.
