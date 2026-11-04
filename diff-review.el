@@ -676,26 +676,35 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
 (add-to-list 'magic-mode-alist
              (cons "\\`\\s-*{\\s-*\"format\"\\s-*:\\s-*\"diff-review/" #'diff-review-mode))
 
+(defun diff-review--leave (buffer leave)
+  "Call LEAVE, then show what came before BUFFER in the windows that showed it.
+Their dedication is lifted meanwhile, else killing BUFFER deletes a
+dedicated one."
+  (let* ((windows (get-buffer-window-list buffer nil t))
+         (dedicated (mapcar #'window-dedicated-p windows)))
+    (dolist (window windows) (set-window-dedicated-p window nil))
+    (funcall leave)
+    (cl-loop for window in windows
+             for was in dedicated
+             ;; A killed buffer has left its windows already.
+             do (when (eq (window-buffer window) buffer)
+                  (switch-to-prev-buffer window))
+                (set-window-dedicated-p window was))))
+
 (defun diff-review--close ()
   "End the review being killed: its files' decorations and its sidebar.
-Windows showing its files go back to what they showed before the
-review; buffers showing a revision of a file are killed.  The last
+Windows showing the review or its files go back to what they showed
+before it; buffers showing a revision of a file are killed.  The last
 review to go takes `diff-review--follow' off the window hook."
   (let ((review (current-buffer)))
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (when (and diff-review-file-mode (eq diff-review--review review))
-          (let* ((windows (get-buffer-window-list buffer nil t))
-                 (dedicated (mapcar #'window-dedicated-p windows)))
-            ;; Else killing the buffer deletes a dedicated window.
-            (dolist (window windows) (set-window-dedicated-p window nil))
-            (if buffer-file-name (diff-review-file-mode -1) (kill-buffer))
-            (cl-loop for window in windows
-                     for was in dedicated
-                     ;; A killed buffer has left its windows already.
-                     do (when (eq (window-buffer window) buffer)
-                          (switch-to-prev-buffer window))
-                        (set-window-dedicated-p window was))))))
+          (diff-review--leave buffer (lambda ()
+                                       (if buffer-file-name
+                                           (diff-review-file-mode -1)
+                                         (kill-buffer)))))))
+    (diff-review--leave review #'ignore)
     (when (buffer-live-p diff-review--sidebar)
       (kill-buffer diff-review--sidebar))
     (unless (seq-some (lambda (buffer)

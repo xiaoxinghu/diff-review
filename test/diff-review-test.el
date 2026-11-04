@@ -237,6 +237,22 @@ The repository has two commits and a dirty worktree touching two files."
       (should (eq (window-buffer w) before))
       (should (eq (window-dedicated-p w) t)))))
 
+(ert-deftest diff-review-test-dedicated-window-survives-the-overview ()
+  "Quitting from the overview gives a dedicated window back, still dedicated."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (split-window-right)
+    (let ((before (get-buffer-create "before")) (w (selected-window)))
+      (switch-to-buffer before)
+      (diff-review-test--open repo)
+      (set-window-dedicated-p w t)
+      (diff-review-next-file)
+      (diff-review-overview)
+      (diff-review-quit)
+      (should (window-live-p w))
+      (should (eq (window-buffer w) before))
+      (should (eq (window-dedicated-p w) t)))))
+
 (ert-deftest diff-review-test-dedicated-window-outside-is-left-alone ()
   "A file does not take a window dedicated to something outside the review."
   (diff-review-test--with-repo
