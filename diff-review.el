@@ -71,6 +71,19 @@
   "Whether to show removed lines inline, above where they were."
   :type 'boolean)
 
+(defcustom diff-review-file-header t
+  "The header line of a file under review.
+t shows the review's header, nil leaves the buffer's header line alone,
+and a function is called in the file's buffer for the string to show.
+The header line the buffer had comes back when the review ends."
+  :type '(choice (const :tag "The review's header" t)
+                 (const :tag "Leave the header line alone" nil)
+                 (function :tag "A function returning the header")))
+
+(defcustom diff-review-file-header-keys t
+  "Whether the review's file header ends with hints for its keys."
+  :type 'boolean)
+
 (defcustom diff-review-sidebar t
   "Whether a review starts with its sidebar shown."
   :type 'boolean)
@@ -107,6 +120,7 @@ Without a background of its own, the background of `diff-removed' is used.")
 (defvar-local diff-review--viewed nil "Hash table of path to the blob hash it was viewed at.")
 (defvar-local diff-review--sidebar nil "The sidebar buffer, once created.")
 (defvar-local diff-review--sidebar-enabled nil "Whether this review shows its sidebar.")
+(defvar-local diff-review--inline-removed nil "Whether this review shows removed lines inline.")
 
 ;; In a file buffer or the sidebar.
 (defvar-local diff-review--review nil "The review buffer this buffer belongs to.")
@@ -115,6 +129,9 @@ Without a background of its own, the background of `diff-removed' is used.")
 (defvar-local diff-review--overlays nil "In a file buffer, its review overlays.")
 (defvar-local diff-review--focus nil "In a file buffer, whether unchanged lines are folded.")
 (defvar-local diff-review--deleted nil "In a buffer showing a deleted file's base version, t.")
+(defvar-local diff-review--saved-header-line nil
+  "In a file buffer, its header line from before the review.
+Buffer-local only while there is one to restore.")
 (defvar diff-review-file-mode)
 
 (defun diff-review--review-buffer ()
@@ -569,7 +586,8 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
   ;; `setq-local': in Emacs 31 a plain `setq' sets the global default, and
   ;; every file buffer's auto-revert then runs this, leaving it modified.
   (setq-local revert-buffer-function #'diff-review--revert)
-  (setq diff-review--sidebar-enabled diff-review-sidebar)
+  (setq diff-review--sidebar-enabled diff-review-sidebar
+        diff-review--inline-removed diff-review-inline-removed)
   (add-hook 'write-contents-functions #'diff-review--write nil t)
   (add-hook 'kill-buffer-hook #'diff-review--close nil t)
   (display-line-numbers-mode -1)
@@ -847,7 +865,8 @@ The review buffer must be current."
 (defun diff-review--decorate ()
   "Add the inline removed lines, the added tint, the fringe bars and the folds."
   (diff-review--undecorate)
-  (let ((mode major-mode))
+  (let ((mode major-mode)
+        (inline (diff-review--in-review diff-review--inline-removed)))
     (if diff-review--deleted
         (let ((overlay (make-overlay (point-min) (point-max))))
           (overlay-put overlay 'face (diff-review--tint 'diff-review-removed 'diff-removed))
@@ -862,7 +881,7 @@ The review buffer must be current."
           (when (> count 0)
             (overlay-put overlay 'face (diff-review--tint 'diff-review-added 'diff-added))
             (overlay-put overlay 'line-prefix (diff-review--fringe-mark 'diff-indicator-added)))
-          (when (and diff-review-inline-removed (plist-get hunk :removed))
+          (when (and inline (plist-get hunk :removed))
             (overlay-put overlay 'before-string
                          (diff-review--removed-string (plist-get hunk :removed) mode)))
           (push overlay diff-review--overlays)))
@@ -908,8 +927,10 @@ The review buffer must be current."
   (let* ((hunk (diff-review--hunk-number))
          (hunks (length diff-review--hunks))
          (focus diff-review--focus)
-         (keys (substitute-command-keys   ; in this buffer, where the file keymap is active
-                "   \\[diff-review-next-hunk] next hunk · \\[diff-review-viewed-and-next] viewed · \\[diff-review-toggle-focus] focus · \\[diff-review-overview] overview")))
+         (keys (if diff-review-file-header-keys
+                   (substitute-command-keys   ; in this buffer, where the file keymap is active
+                    "   \\[diff-review-next-hunk] next hunk · \\[diff-review-viewed-and-next] viewed · \\[diff-review-toggle-focus] focus · \\[diff-review-overview] overview")
+                 "")))
     (diff-review--in-review
       (let ((file (diff-review--file)))
         (concat
@@ -978,9 +999,10 @@ The review buffer must be current."
   (diff-review--decorate))
 
 (defun diff-review-toggle-inline-removed ()
-  "Show or hide the removed lines, in this and later files."
+  "Show or hide the removed lines, in this and later files of the review."
   (interactive)
-  (setq diff-review-inline-removed (not diff-review-inline-removed))
+  (diff-review--in-review
+    (setq diff-review--inline-removed (not diff-review--inline-removed)))
   (diff-review--decorate))
 
 (defvar-keymap diff-review-file-command-map
@@ -1029,10 +1051,18 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
                   (list (list :line 1 :count 0 :removed nil))
                 (diff-review--in-review (diff-review--parse-hunks (diff-review--file)))))
         (diff-review--decorate)
-        (setq header-line-format '(:eval (diff-review--file-header))))
+        (when diff-review-file-header
+          (unless (local-variable-p 'diff-review--saved-header-line) ; on again for the next visit
+            (setq diff-review--saved-header-line header-line-format))
+          (setq header-line-format
+                `(:eval (funcall ',(if (functionp diff-review-file-header)
+                                       diff-review-file-header
+                                     #'diff-review--file-header))))))
     (diff-review--undecorate)
-    (setq header-line-format nil
-          diff-review--review nil)))
+    (when (local-variable-p 'diff-review--saved-header-line)
+      (setq header-line-format diff-review--saved-header-line)
+      (kill-local-variable 'diff-review--saved-header-line))
+    (setq diff-review--review nil)))
 
 ;;;; Evil
 

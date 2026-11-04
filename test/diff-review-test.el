@@ -189,6 +189,55 @@ The repository has two commits and a dirty worktree touching two files."
         (should-not (buffer-live-p blob))
         (should (eq (window-buffer w) before))))))
 
+;;;; The review's state stays inside the review
+
+(ert-deftest diff-review-test-header-line-comes-back ()
+  "A file's own header line is back after the review, even when revisited."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (with-current-buffer (find-file-noselect (expand-file-name "src/b.txt" repo))
+      (setq header-line-format "mine"))
+    (diff-review-test--open repo)
+    (diff-review-next-file) (diff-review-next-file) (diff-review-previous-file)
+    (let ((b (get-buffer "b.txt")))
+      (should (eq (window-buffer) b))
+      (should-not (equal (buffer-local-value 'header-line-format b) "mine"))
+      (diff-review-quit)
+      (should (equal (buffer-local-value 'header-line-format b) "mine")))))
+
+(ert-deftest diff-review-test-header-line-left-alone ()
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (let ((diff-review-file-header nil))
+      (with-current-buffer (find-file-noselect (expand-file-name "src/b.txt" repo))
+        (setq header-line-format "mine"))
+      (diff-review-test--open repo)
+      (diff-review-next-file)
+      (should (equal (buffer-local-value 'header-line-format (window-buffer)) "mine")))))
+
+(defun diff-review-test--inline-shown-p ()
+  "Whether the selected window's file shows any removed lines inline."
+  (seq-some (lambda (o) (overlay-get o 'before-string))
+            (buffer-local-value 'diff-review--overlays (window-buffer))))
+
+(ert-deftest diff-review-test-inline-toggle-is-per-review ()
+  "Toggling removed lines leaves the option and other reviews as they were."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (let ((diff-review-inline-removed t)
+          (other (diff-review-test--open repo "head.json" "HEAD^" "HEAD")))
+      (diff-review-test--open repo)
+      (diff-review-next-file)                   ; src/b.txt, which lost a line
+      (should (diff-review-test--inline-shown-p))
+      (with-current-buffer (window-buffer) (diff-review-toggle-inline-removed))
+      (should-not (diff-review-test--inline-shown-p))
+      (should (eq diff-review-inline-removed t))
+      (with-current-buffer other
+        (should (eq diff-review--inline-removed t))
+        (diff-review-next-file))
+      (should (eq (buffer-local-value 'diff-review--review (window-buffer)) other))
+      (should (diff-review-test--inline-shown-p)))))
+
 (ert-deftest diff-review-test-empty-review ()
   (diff-review-test--with-repo
     (diff-review-test--git "commit" "-q" "-am" "three")
