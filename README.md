@@ -72,6 +72,13 @@ With Evil, the lists start in normal state and `]]` `[[` walk the files; in a
 file `]c` `[c` walk the hunks, `zv` marks viewed, `zf` folds, `zd` hides the
 removed lines, `gl` goes to the overview and `gq` ends the review.
 
+A file under review shows the review's header line, ending with key hints;
+`diff-review-file-header` can leave the buffer's own header line alone or name
+a function that makes one, and `diff-review-file-header-keys` drops the hints.
+The buffer's header line comes back when the review ends. Hiding the removed
+lines lasts for that review; `diff-review-inline-removed` is where each review
+starts.
+
 ## Check
 
 `make check` byte-compiles without warnings, runs checkdoc and the ERT tests.
