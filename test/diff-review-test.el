@@ -220,6 +220,23 @@ The repository has two commits and a dirty worktree touching two files."
       (should (eq (window-buffer w) before))
       (should (eq (window-dedicated-p w) t)))))
 
+(ert-deftest diff-review-test-dedicated-window-survives-its-blob ()
+  "Ending a commit review kills its blobs without deleting a dedicated window."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (split-window-right)
+    (let ((before (get-buffer-create "before")) (w (selected-window)))
+      (switch-to-buffer before)
+      (diff-review-test--open repo "head.json" "HEAD^" "HEAD")
+      (set-window-dedicated-p w t)
+      (diff-review-next-file)
+      (set-buffer (window-buffer w))
+      (should-not buffer-file-name)
+      (diff-review-quit)
+      (should (window-live-p w))
+      (should (eq (window-buffer w) before))
+      (should (eq (window-dedicated-p w) t)))))
+
 (ert-deftest diff-review-test-dedicated-window-outside-is-left-alone ()
   "A file does not take a window dedicated to something outside the review."
   (diff-review-test--with-repo

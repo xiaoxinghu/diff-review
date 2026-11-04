@@ -685,11 +685,17 @@ review to go takes `diff-review--follow' off the window hook."
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (when (and diff-review-file-mode (eq diff-review--review review))
-          (let ((windows (get-buffer-window-list buffer nil t)))
+          (let* ((windows (get-buffer-window-list buffer nil t))
+                 (dedicated (mapcar #'window-dedicated-p windows)))
+            ;; Else killing the buffer deletes a dedicated window.
+            (dolist (window windows) (set-window-dedicated-p window nil))
             (if buffer-file-name (diff-review-file-mode -1) (kill-buffer))
-            (dolist (window windows)   ; a killed buffer has left its windows already
-              (when (eq (window-buffer window) buffer)
-                (diff-review--undedicated window #'switch-to-prev-buffer window)))))))
+            (cl-loop for window in windows
+                     for was in dedicated
+                     ;; A killed buffer has left its windows already.
+                     do (when (eq (window-buffer window) buffer)
+                          (switch-to-prev-buffer window))
+                        (set-window-dedicated-p window was))))))
     (when (buffer-live-p diff-review--sidebar)
       (kill-buffer diff-review--sidebar))
     (unless (seq-some (lambda (buffer)
