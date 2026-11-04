@@ -1140,49 +1140,36 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
 
 ;;;; Evil
 
-;; Keys in the style of evil-collection, whose magit-section keys fold the
-;; tree.  The lists start in normal state, so j and k walk the lines and the
-;; leader works; gj and gk, C-j and C-k, ]] and [[ show the next and previous
-;; file.  A file is being edited, so its keys
-;; stay off the editing ones: ]c and [c walk the hunks, ]] and [[ the files,
-;; zv marks viewed and moves on, zf folds, zd hides the removed lines, gs
-;; toggles the sidebar, gl goes back to the overview and gq ends the review.
+;; Normal state shadows n, p and g, so the lists get gj, gk and gr in their
+;; place, as evil-collection does, and TAB, which motion state takes for
+;; `evil-jump-forward'.  The rest mirror the Emacs keys.  A file under
+;; review is being edited: its keys are the prefix, which evil leaves alone.
+
+(defcustom diff-review-evil-keys t
+  "Non-nil starts the lists in Evil's normal state, with keys for it.
+Set it before Evil or this package loads; nil leaves Evil untouched."
+  :type 'boolean)
 
 (declare-function evil-set-initial-state "evil-core")
 (declare-function evil-define-key* "evil-core")
-(declare-function evil-define-minor-mode-key "evil-core")
 
 (with-eval-after-load 'evil
-  (dolist (mode '(diff-review-mode diff-review-sidebar-mode))
-    (evil-set-initial-state mode 'normal))
-  (dolist (map (list diff-review-mode-map diff-review-sidebar-mode-map))
-    (evil-define-key* 'normal map
-      (kbd "RET") #'diff-review-open-at-point
-      "o" #'diff-review-open-at-point
-      "gj" #'diff-review-next-file
-      "gk" #'diff-review-previous-file
-      (kbd "C-j") #'diff-review-next-file
-      (kbd "C-k") #'diff-review-previous-file
-      "]]" #'diff-review-next-file
-      "[[" #'diff-review-previous-file
-      "v" #'diff-review-toggle-viewed
-      "u" #'diff-review-next-unviewed
-      "t" #'diff-review-toggle-sidebar
-      "gr" #'diff-review-refresh
-      "q" (if (eq map diff-review-sidebar-mode-map)
-              #'diff-review-toggle-sidebar
-            #'diff-review-quit)))
-  (evil-define-minor-mode-key 'normal 'diff-review-file-mode
-    "]c" #'diff-review-next-hunk
-    "[c" #'diff-review-previous-hunk
-    "]]" #'diff-review-next-file
-    "[[" #'diff-review-previous-file
-    "zv" #'diff-review-viewed-and-next
-    "zf" #'diff-review-toggle-focus
-    "zd" #'diff-review-toggle-inline-removed
-    "gs" #'diff-review-toggle-sidebar
-    "gl" #'diff-review-overview
-    "gq" #'diff-review-quit))
+  (when diff-review-evil-keys
+    (dolist (mode '(diff-review-mode diff-review-sidebar-mode))
+      (evil-set-initial-state mode 'normal))
+    (dolist (map (list diff-review-mode-map diff-review-sidebar-mode-map))
+      (evil-define-key* 'normal map
+        (kbd "RET") #'diff-review-open-at-point
+        (kbd "TAB") #'magit-section-toggle
+        "gj" #'diff-review-next-file
+        "gk" #'diff-review-previous-file
+        "gr" #'diff-review-refresh
+        "u" #'diff-review-next-unviewed
+        "v" #'diff-review-toggle-viewed
+        "t" #'diff-review-toggle-sidebar
+        "q" (if (eq map diff-review-sidebar-mode-map)
+                #'diff-review-toggle-sidebar
+              #'diff-review-quit)))))
 
 ;;;; Creating a review
 

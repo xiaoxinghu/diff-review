@@ -72,9 +72,26 @@ keeps its own `C-c` keys:
 Set the prefix with `setopt` or Customize, or `setq` before loading; nil binds no keys at
 all, for binding `diff-review-file-command-map` or the commands yourself.
 
-With Evil, the lists start in normal state and `]]` `[[` walk the files; in a
-file `]c` `[c` walk the hunks, `zv` marks viewed, `zf` folds, `zd` hides the
-removed lines, `gl` goes to the overview and `gq` ends the review.
+With Evil, the lists start in normal state. Normal state takes `n`, `p`, `g`
+and `TAB`, so there `gj` `gk` walk the files, `gr` rescans and `TAB` folds a
+folder; `RET`, `u`, `v`, `t` and `q` are as above. In a file the prefix keys
+work in normal state, and nothing else is bound. Set `diff-review-evil-keys`
+to nil before loading to leave Evil untouched: no initial state, no keys.
+
+For vim keys in a file, paste this; it shadows `gq` (`evil-fill-and-move`), and
+`zf` `zd` `gl` where evil-lion, vimish-fold or origami bind them:
+
+```elisp
+(with-eval-after-load 'evil
+  (evil-define-minor-mode-key 'normal 'diff-review-file-mode
+    "]c" #'diff-review-next-hunk
+    "[c" #'diff-review-previous-hunk
+    "zv" #'diff-review-viewed-and-next
+    "zf" #'diff-review-toggle-focus
+    "zd" #'diff-review-toggle-inline-removed
+    "gl" #'diff-review-overview
+    "gq" #'diff-review-quit))
+```
 
 A file under review shows the review's header line, ending with key hints;
 `diff-review-file-header` can leave the buffer's own header line alone or name

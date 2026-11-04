@@ -392,5 +392,45 @@ The repository has two commits and a dirty worktree touching two files."
         (should (string-match-p "\"nope\".*\"base\".*diff-review-default-base"
                                 (cadr err)))))))
 
+;; Evil's keys are set when it loads, once per Emacs, so each case runs in
+;; a child Emacs with this one's load path.
+(defun diff-review-test--evil (form)
+  "Return the value of FORM, evaluated in a fresh batch Emacs."
+  (with-temp-buffer
+    (unless (zerop (call-process
+                    (expand-file-name invocation-name invocation-directory) nil t nil
+                    "-Q" "--batch" "--eval"
+                    (prin1-to-string
+                     `(progn (setq load-path ',load-path)
+                             (prin1 ,form)))))
+      (error "Child Emacs failed: %s" (buffer-string)))
+    (car (read-from-string (buffer-string)))))
+
+(ert-deftest diff-review-test-evil-keys ()
+  "With Evil, the lists start in normal state with TAB folding; a file gets no keys."
+  (skip-unless (locate-library "evil"))
+  (should (equal (diff-review-test--evil
+                  '(progn (require 'evil)
+                          (require 'diff-review)
+                          (list (evil-initial-state 'diff-review-mode)
+                                (lookup-key (evil-get-auxiliary-keymap
+                                             diff-review-mode-map 'normal)
+                                            (kbd "TAB"))
+                                (assq 'diff-review-file-mode
+                                      (cdr (assq 'normal evil-minor-mode-keymaps-alist))))))
+                 '(normal magit-section-toggle nil))))
+
+(ert-deftest diff-review-test-evil-keys-off ()
+  "`diff-review-evil-keys' nil leaves Evil untouched."
+  (skip-unless (locate-library "evil"))
+  (should (equal (diff-review-test--evil
+                  '(progn (setq diff-review-evil-keys nil)
+                          (require 'diff-review)
+                          (require 'evil)
+                          (list (evil-initial-state 'diff-review-mode)
+                                (evil-get-auxiliary-keymap
+                                 diff-review-mode-map 'normal nil t))))
+                 '(nil nil))))
+
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here
