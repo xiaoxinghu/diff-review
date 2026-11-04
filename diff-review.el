@@ -96,12 +96,36 @@ The header line the buffer had comes back when the review ends."
   "Which side of the review's window the sidebar takes."
   :type '(choice (const left) (const right)))
 
+(defcustom diff-review-tint-added t
+  "Whether to tint added lines with `diff-review-added'.
+Without the tint they keep the fringe bar, which a terminal has not."
+  :type 'boolean)
+
+(defcustom diff-review-tint-removed t
+  "Whether to tint the removed lines shown inline with `diff-review-removed'.
+Without the tint they keep the fringe bar, which a terminal has not."
+  :type 'boolean)
+
+(defcustom diff-review-hunk-recenter 6
+  "The window line a hunk is shown on when moved to, or nil to center it."
+  :type '(choice (integer :tag "Line from the top") (const :tag "Center" nil)))
+
 (defface diff-review-added '((t :extend t))
   "Face for added lines, over the syntax faces.
 Without a background of its own, the background of `diff-added' is used.")
 (defface diff-review-removed '((t :extend t))
   "Face for removed lines, shown inline, over the syntax faces.
 Without a background of its own, the background of `diff-removed' is used.")
+(defface diff-review-title '((t :inherit bold :height 1.2))
+  "Face for the overview's title, the head and the base.")
+(defface diff-review-file-added '((t :inherit (bold success)))
+  "Face for the status letter of an added file.")
+(defface diff-review-file-deleted '((t :inherit (bold error)))
+  "Face for the status letter of a deleted file.")
+(defface diff-review-file-changed '((t :inherit (bold warning)))
+  "Face for the status letter of a modified, renamed or copied file.")
+(defface diff-review-unchanged '((t :inherit shadow))
+  "Face for the line that stands for folded unchanged lines.")
 
 (defconst diff-review-format "diff-review/1"
   "The value of the format key a review file starts with.")
@@ -315,17 +339,23 @@ Returns t, as `write-contents-functions' expects."
 
 ;;;; Rendering
 
+(defun diff-review--glyph (glyph ascii)
+  "GLYPH where the frame can draw it, else its stand-in ASCII."
+  (if (or (display-graphic-p) (seq-every-p #'char-displayable-p glyph))
+      glyph
+    ascii))
+
 (defun diff-review--status-face (status)
   "The face for a git STATUS letter."
   (pcase status
-    ("A" '(bold success))
-    ("D" '(bold error))
-    (_ '(bold warning))))
+    ("A" 'diff-review-file-added)
+    ("D" 'diff-review-file-deleted)
+    (_ 'diff-review-file-changed)))
 
 (defun diff-review--counts (added removed)
   "+ADDED and −REMOVED, in the diff indicator faces."
   (concat (propertize (format "+%d" added) 'face 'diff-indicator-added) " "
-          (propertize (format "−%d" removed) 'face 'diff-indicator-removed)))
+          (propertize (format "%s%d" (diff-review--glyph "−" "-") removed) 'face 'diff-indicator-removed)))
 
 (defun diff-review--sum (files key)
   "The sum of KEY over the plists FILES."
@@ -358,11 +388,15 @@ Returns t, as `write-contents-functions' expects."
                         (propertize (file-name-nondirectory path)
                                     'face (cond ((eql i diff-review--index) 'bold)
                                                 (viewed 'shadow)))
-                        (diff-review--stats (list file) (and viewed (propertize "✓ " 'face 'success)))
+                        (diff-review--stats
+                         (list file)
+                         (and viewed (propertize (concat (diff-review--glyph "✓" "*") " ")
+                                                 'face 'success)))
                         "\n")
                 'diff-review-index i
                 'help-echo (if (plist-get file :old)
-                               (format "%s → %s" (plist-get file :old) path)
+                               (format "%s %s %s"
+                                       (plist-get file :old) (diff-review--glyph "→" "->") path)
                              path))))
 
 (defun diff-review--tree ()
@@ -437,8 +471,9 @@ A directory holding only a directory is merged with it, as in a/b."
         (n (length diff-review--files)))
     (erase-buffer)
     (magit-insert-section (diff-review-root)
-      (insert (propertize (format "%s ← %s" diff-review--head-name diff-review--base-name)
-                          'face '(bold (:height 1.2)))
+      (insert (propertize (format "%s %s %s" diff-review--head-name
+                                  (diff-review--glyph "←" "<-") diff-review--base-name)
+                          'face 'diff-review-title)
               "\n\n"
               (format "%d file%s changed, " n (if (= n 1) "" "s"))
               (diff-review--summary) "\n"
@@ -591,7 +626,6 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
   (add-hook 'write-contents-functions #'diff-review--write nil t)
   (add-hook 'kill-buffer-hook #'diff-review--close nil t)
   (display-line-numbers-mode -1)
-  (hl-line-mode 1)
   (auto-revert-mode 1)
   (diff-review--load))
 
@@ -629,13 +663,12 @@ as one atomic window.  The keys are those of `diff-review-mode';
 \\<diff-review-sidebar-mode-map>\\[diff-review-toggle-sidebar] hides the sidebar.
 
 \\{diff-review-sidebar-mode-map}"
-  (setq cursor-type nil
-        window-size-fixed 'width
+  ;; The header line carries the summary; a mode line under the tree adds nothing.
+  (setq window-size-fixed 'width
         mode-line-format nil
         header-line-format '(:eval (diff-review-sidebar--header)))
   (add-hook 'kill-buffer-hook #'diff-review-sidebar--close nil t)
-  (display-line-numbers-mode -1)
-  (hl-line-mode 1))
+  (display-line-numbers-mode -1))
 
 (defun diff-review--sidebar-buffer (review)
   "REVIEW's sidebar buffer, created if needed."
@@ -851,25 +884,30 @@ The review buffer must be current."
         (buffer-string))
     (error text)))
 
-(defun diff-review--removed-string (lines mode)
-  "The inline rendering of removed LINES: fontified as MODE, tinted, fringe-marked."
-  (let ((removed (diff-review--tint 'diff-review-removed 'diff-removed))
-        (mark (diff-review--fringe-mark 'diff-indicator-removed)))
+(defun diff-review--removed-string (lines mode tint)
+  "The inline rendering of removed LINES: fontified as MODE, fringe-marked.
+TINT, a face or nil, goes over the syntax faces."
+  (let ((mark (diff-review--fringe-mark 'diff-indicator-removed)))
     (mapconcat (lambda (line)
-                 (let ((text (if (eq mode 'fundamental-mode) line
+                 (let ((text (if (eq mode 'fundamental-mode)
+                                 (copy-sequence line)   ; the hunk's own string: keep it bare
                                (diff-review--fontify line mode))))
-                   (add-face-text-property 0 (length text) removed t text)
-                   (concat mark text (propertize "\n" 'face removed))))
+                   (when tint (add-face-text-property 0 (length text) tint t text))
+                   (concat mark text (propertize "\n" 'face tint))))
                lines)))
 
 (defun diff-review--decorate ()
   "Add the inline removed lines, the added tint, the fringe bars and the folds."
   (diff-review--undecorate)
   (let ((mode major-mode)
-        (inline (diff-review--in-review diff-review--inline-removed)))
+        (inline (diff-review--in-review diff-review--inline-removed))
+        (added (and diff-review-tint-added (diff-review--tint 'diff-review-added 'diff-added)))
+        (removed (and diff-review-tint-removed
+                      (diff-review--tint 'diff-review-removed 'diff-removed))))
     (if diff-review--deleted
         (let ((overlay (make-overlay (point-min) (point-max))))
-          (overlay-put overlay 'face (diff-review--tint 'diff-review-removed 'diff-removed))
+          (overlay-put overlay 'face removed)
+          (overlay-put overlay 'line-prefix (diff-review--fringe-mark 'diff-indicator-removed))
           (push overlay diff-review--overlays))
       (dolist (hunk diff-review--hunks)
         (let* ((line (diff-review--hunk-line hunk))
@@ -879,17 +917,18 @@ The review buffer must be current."
                       (diff-review--line-pos (+ (plist-get hunk :line) count))))
                (overlay (make-overlay start end nil t nil)))
           (when (> count 0)
-            (overlay-put overlay 'face (diff-review--tint 'diff-review-added 'diff-added))
+            (overlay-put overlay 'face added)
             (overlay-put overlay 'line-prefix (diff-review--fringe-mark 'diff-indicator-added)))
           (when (and inline (plist-get hunk :removed))
             (overlay-put overlay 'before-string
-                         (diff-review--removed-string (plist-get hunk :removed) mode)))
+                         (diff-review--removed-string (plist-get hunk :removed) mode removed)))
           (push overlay diff-review--overlays)))
       (when diff-review--focus (diff-review--fold)))))
 
 (defun diff-review--fold ()
   "Hide unchanged lines beyond `diff-review-context' of any hunk."
   (let ((last (line-number-at-pos (point-max)))
+        (dots (diff-review--glyph "⋯" "..."))
         keep)
     (dolist (hunk diff-review--hunks)
       (push (cons (max 1 (- (diff-review--hunk-line hunk) diff-review-context))
@@ -904,8 +943,9 @@ The review buffer must be current."
           (let ((overlay (make-overlay (diff-review--line-pos line)
                                        (diff-review--line-pos (car range)))))
             (overlay-put overlay 'display
-                         (propertize (format "   ⋯ %d unchanged lines ⋯\n" (- (car range) line))
-                                     'face 'shadow))
+                         (propertize (format "   %s %d unchanged lines %s\n"
+                                             dots (- (car range) line) dots)
+                                     'face 'diff-review-unchanged))
             (push overlay diff-review--overlays)))
         (setq line (max line (1+ (cdr range))))))))
 
@@ -948,15 +988,15 @@ The review buffer must be current."
          (propertize (format "   hunk %s/%d" (or hunk "–") hunks) 'face 'shadow)
          "   "
          (if (diff-review--viewed-p file)
-             (propertize "✓ viewed" 'face 'success)
-           (propertize "○ not viewed" 'face 'shadow))
+             (propertize (concat (diff-review--glyph "✓" "*") " viewed") 'face 'success)
+           (propertize (concat (diff-review--glyph "○" "o") " not viewed") 'face 'shadow))
          (propertize (if focus "   focus" "") 'face 'shadow)
          (propertize keys 'face 'shadow))))))
 
 (defun diff-review--goto-hunk (hunk)
   "Move to where HUNK starts, near the top of the window."
   (goto-char (diff-review--line-pos (diff-review--hunk-line hunk)))
-  (recenter 6))
+  (recenter diff-review-hunk-recenter))
 
 (defun diff-review-next-hunk ()
   "Go to the next hunk, continuing into the next file."

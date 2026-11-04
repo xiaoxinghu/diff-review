@@ -79,6 +79,27 @@ The buffer's header line comes back when the review ends. Hiding the removed
 lines lasts for that review; `diff-review-inline-removed` is where each review
 starts.
 
+## Look
+
+Everything drawn has a face in `M-x customize-group diff-review`, for a
+theme to set. Added and removed lines take the background of `diff-added`
+and `diff-removed` unless `diff-review-added` and `diff-review-removed` set
+their own; `diff-review-tint-added` and `diff-review-tint-removed` turn the
+tint off and leave the fringe bar. On a terminal that cannot draw `←`, `✓`
+or `⋯`, ASCII stands in.
+
+The lists leave `hl-line-mode` and the cursor as you have them. For a
+highlighted line and no cursor:
+
+```elisp
+(add-hook 'diff-review-mode-hook #'hl-line-mode)
+(add-hook 'diff-review-sidebar-mode-hook (lambda () (hl-line-mode) (setq cursor-type nil)))
+```
+
+The sidebar has no mode line, as its header line carries the summary;
+`(kill-local-variable 'mode-line-format)` in `diff-review-sidebar-mode-hook`
+gives it back.
+
 ## Check
 
 `make check` byte-compiles without warnings, runs checkdoc and the ERT tests.
