@@ -1,5 +1,13 @@
 ;;; diff-review.el --- Review a git diff from a review file -*- lexical-binding: t; -*-
 
+;; Author: Xiaoxing Hu <hi@xiaoxing.dev>
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "29.1") (magit-section "4.0"))
+;; Keywords: vc, tools
+;; URL: https://github.com/xiaoxinghu/diff-review
+
+;; This file is not part of GNU Emacs.
+
 ;;; Commentary:
 
 ;; A review is a file.  Visiting it shows an overview of what a worktree
@@ -12,12 +20,14 @@
 ;; removed lines inline above where they were, a tint on added lines, and
 ;; a focus mode that folds the unchanged lines.
 ;;
-;; A sidebar shows the same tree beside the main window, as a side
-;; window.  Files are kept in the tree's order, directories first, so
-;; walking them follows the tree.  It follows the review: it shows while
-;; the selected window shows the overview or one of its files, hides when
-;; you switch to anything else, and `diff-review-toggle-sidebar' turns it
-;; off for a review altogether.
+;; A sidebar shows the same tree beside the window the review shows in,
+;; as its atomic partner: the two split, move and close as one window, so
+;; the review can sit in any split the user likes and the tree stays next
+;; to it.  Files are kept in the tree's order, directories first, so
+;; walking them follows the tree.  The sidebar appears with any window
+;; showing the overview or one of its files, goes when the window shows
+;; anything else, and `diff-review-toggle-sidebar' turns it off for a
+;; review altogether.
 ;;
 ;; The review file is JSON and starts with a `format' key, which is how
 ;; `diff-review-mode' is chosen, whatever the file is called or wherever
@@ -35,7 +45,9 @@
 ;;    "viewed": {"src/a.ts": "<blob hash>"}}
 ;;
 ;; The review buffer is an ordinary buffer: hide it, show it, kill it to
-;; end the review.  Files keep a pointer back to it.
+;; end the review.  Files keep a pointer back to it.  The files it shows
+;; in its window are not recorded in the window's history, so ending the
+;; review returns the window to what it showed before.
 
 ;;; Code:
 
@@ -68,7 +80,7 @@
   :type 'integer)
 
 (defcustom diff-review-sidebar-side 'left
-  "Which side of the frame the sidebar takes."
+  "Which side of the review's window the sidebar takes."
   :type '(choice (const left) (const right)))
 
 (defface diff-review-added '((t :extend t))
@@ -93,7 +105,6 @@ Without a background of its own, the background of `diff-removed' is used.")
 (defvar-local diff-review--files nil "Vector of file plists, in tree order.")
 (defvar-local diff-review--index nil "Index of the file shown, or nil for none.")
 (defvar-local diff-review--viewed nil "Hash table of path to the blob hash it was viewed at.")
-(defvar-local diff-review--main-window nil "The window the overview and its files show in.")
 (defvar-local diff-review--sidebar nil "The sidebar buffer, once created.")
 (defvar-local diff-review--sidebar-enabled nil "Whether this review shows its sidebar.")
 
@@ -125,7 +136,7 @@ Without a background of its own, the background of `diff-removed' is used.")
   (let ((default-directory diff-review--root))
     (with-temp-buffer
       (unless (zerop (apply #'process-file "git" nil t nil args))
-        (error "git %s: %s" (string-join args " ") (string-trim (buffer-string))))
+        (error "Git %s: %s" (string-join args " ") (string-trim (buffer-string))))
       (string-trim-right (buffer-string) "\n+"))))
 
 (defun diff-review--toplevel (directory)
@@ -195,7 +206,7 @@ Return a hash table of path to (ADDED . REMOVED)."
         (insert (string-join paths "\n") "\n")
         (unless (zerop (call-process-region (point-min) (point-max) "git" t t nil
                                             "hash-object" "--stdin-paths"))
-          (error "git hash-object: %s" (string-trim (buffer-string))))
+          (error "Git hash-object: %s" (string-trim (buffer-string))))
         (split-string (buffer-string) "\n" t))))))
 
 (defun diff-review--scan ()
@@ -225,6 +236,7 @@ Return a hash table of path to (ADDED . REMOVED)."
                    entries)))))
 
 (defun diff-review--file (&optional index)
+  "The file plist at INDEX, by default the one shown, or nil."
   (and diff-review--files
        (aref diff-review--files (or index diff-review--index))))
 
@@ -276,6 +288,7 @@ Returns t, as `write-contents-functions' expects."
   (equal (gethash (plist-get file :path) diff-review--viewed) (plist-get file :hash)))
 
 (defun diff-review--set-viewed (file flag)
+  "Mark FILE viewed at its current contents when FLAG, else unmark it, and write."
   (unless (verify-visited-file-modtime)   ; someone else wrote it: take theirs first
     (diff-review--revert))
   (if flag
@@ -286,6 +299,7 @@ Returns t, as `write-contents-functions' expects."
 ;;;; Rendering
 
 (defun diff-review--status-face (status)
+  "The face for a git STATUS letter."
   (pcase status
     ("A" '(bold success))
     ("D" '(bold error))
@@ -297,6 +311,7 @@ Returns t, as `write-contents-functions' expects."
           (propertize (format "−%d" removed) 'face 'diff-indicator-removed)))
 
 (defun diff-review--sum (files key)
+  "The sum of KEY over the plists FILES."
   (apply #'+ (mapcar (lambda (f) (plist-get f key)) files)))
 
 (defun diff-review--summary ()
@@ -348,6 +363,7 @@ A directory holding only a directory is merged with it, as in a/b."
     (diff-review--merge-dirs (cdr root))))
 
 (defun diff-review--merge-dirs (tree)
+  "TREE with each directory holding only a directory merged with it."
   (mapcar (lambda (entry)
             (let ((name (car entry)) (child (cdr entry)))
               (while (and (consp child) (null (cdr child)) (consp (cdar child)))
@@ -395,7 +411,7 @@ A directory holding only a directory is merged with it, as in a/b."
                                          'diff-review-index diff-review--index))
                  (next-single-property-change (point-min) 'diff-review-index))))
     (when pos (goto-char pos)))
-  (when-let* ((window (get-buffer-window (current-buffer))))
+  (dolist (window (get-buffer-window-list nil nil t))
     (set-window-point window (point))))
 
 (defun diff-review--render ()
@@ -448,6 +464,7 @@ A directory holding only a directory is merged with it, as in a/b."
 ;;;; Commands on a list, in the overview or the sidebar
 
 (defun diff-review--index-at-point ()
+  "The index of the file on this line, or nil."
   (get-text-property (line-beginning-position) 'diff-review-index))
 
 (defun diff-review-open-at-point ()
@@ -508,17 +525,22 @@ A file that changed since it was viewed loses its mark."
 (defun diff-review-overview ()
   "Show the overview in the main window."
   (interactive)
-  (let ((review (or (diff-review--review-buffer) (user-error "Not in a review"))))
-    (diff-review--show-in-main review review)))
+  (diff-review--show-in-main (or (diff-review--review-buffer)
+                                 (user-error "Not in a review"))))
+
+(defun diff-review-quit ()
+  "End the review: its buffer, sidebar and decorations go, as does what it showed."
+  (interactive)
+  (kill-buffer (diff-review--in-review (current-buffer))))
 
 (defun diff-review-toggle-sidebar ()
   "Show or hide this review's sidebar."
   (interactive)
+  (when-let* ((main (window-parameter (selected-window) 'diff-review-main)))
+    (select-window main))               ; this sidebar may be about to go
   (diff-review--in-review
-    (setq diff-review--sidebar-enabled (not diff-review--sidebar-enabled))
-    (if diff-review--sidebar-enabled
-        (diff-review--show-sidebar (current-buffer))
-      (diff-review--hide-sidebar (selected-frame)))))
+    (setq diff-review--sidebar-enabled (not diff-review--sidebar-enabled)))
+  (mapc #'diff-review--follow (frame-list)))
 
 (defvar-keymap diff-review-mode-map
   :doc "Keymap for `diff-review-mode', shared with the sidebar."
@@ -530,7 +552,8 @@ A file that changed since it was viewed loses its mark."
   "u" #'diff-review-next-unviewed
   "v" #'diff-review-toggle-viewed
   "g" #'diff-review-refresh
-  "t" #'diff-review-toggle-sidebar)
+  "t" #'diff-review-toggle-sidebar
+  "q" #'diff-review-quit)
 
 ;;;###autoload
 (define-derived-mode diff-review-mode magit-section-mode "Review"
@@ -540,11 +563,13 @@ or folds a directory.  \\[diff-review-next-file] and \\[diff-review-previous-fil
 \\[diff-review-next-unviewed] skips to the next unviewed one.
 \\[diff-review-toggle-viewed] toggles the viewed mark, \\[diff-review-refresh] rescans
 and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
-\\[quit-window] hides the review; killing the buffer ends it.
+\\[diff-review-quit] ends the review, as does killing the buffer.
 
 \\{diff-review-mode-map}"
-  (setq revert-buffer-function #'diff-review--revert
-        diff-review--sidebar-enabled diff-review-sidebar)
+  ;; `setq-local': in Emacs 31 a plain `setq' sets the global default, and
+  ;; every file buffer's auto-revert then runs this, leaving it modified.
+  (setq-local revert-buffer-function #'diff-review--revert)
+  (setq diff-review--sidebar-enabled diff-review-sidebar)
   (add-hook 'write-contents-functions #'diff-review--write nil t)
   (add-hook 'kill-buffer-hook #'diff-review--close nil t)
   (display-line-numbers-mode -1)
@@ -557,12 +582,18 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
              (cons "\\`\\s-*{\\s-*\"format\"\\s-*:\\s-*\"diff-review/" #'diff-review-mode))
 
 (defun diff-review--close ()
-  "End the review being killed: its files' decorations and its sidebar."
+  "End the review being killed: its files' decorations and its sidebar.
+Windows showing its files go back to what they showed before the
+review; buffers showing a revision of a file are killed."
   (let ((review (current-buffer)))
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (when (and diff-review-file-mode (eq diff-review--review review))
-          (diff-review-file-mode -1))))
+          (let ((windows (get-buffer-window-list buffer nil t)))
+            (if buffer-file-name (diff-review-file-mode -1) (kill-buffer))
+            (dolist (window windows)   ; a killed buffer has left its windows already
+              (when (eq (window-buffer window) buffer)
+                (switch-to-prev-buffer window)))))))
     (when (buffer-live-p diff-review--sidebar)
       (kill-buffer diff-review--sidebar))))
 
@@ -575,8 +606,8 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
 
 (define-derived-mode diff-review-sidebar-mode magit-section-mode "Review-Sidebar"
   "Major mode for a review's sidebar: its changed files as a tree.
-The sidebar shows beside the main window.
-The keys are those of `diff-review-mode';
+The sidebar shows beside the window the review shows in, the two
+as one atomic window.  The keys are those of `diff-review-mode';
 \\<diff-review-sidebar-mode-map>\\[diff-review-toggle-sidebar] hides the sidebar.
 
 \\{diff-review-sidebar-mode-map}"
@@ -584,6 +615,7 @@ The keys are those of `diff-review-mode';
         window-size-fixed 'width
         mode-line-format nil
         header-line-format '(:eval (diff-review-sidebar--header)))
+  (add-hook 'kill-buffer-hook #'diff-review-sidebar--close nil t)
   (display-line-numbers-mode -1)
   (hl-line-mode 1))
 
@@ -601,6 +633,7 @@ The keys are those of `diff-review-mode';
     diff-review--sidebar))
 
 (defun diff-review-sidebar--header ()
+  "The sidebar's header line: the head and the review's summary."
   (diff-review--in-review
     (concat (propertize (format " %s  " diff-review--head-name) 'face 'bold)
             (diff-review--summary))))
@@ -621,74 +654,82 @@ The keys are those of `diff-review-mode';
         (when (and moved diff-review--index)   ; show the new file, else keep the folds
           (magit-section-reveal (magit-current-section)))))))
 
-(defun diff-review--sidebar-window (frame)
-  "The window of FRAME showing a review sidebar, or nil."
-  (seq-find (lambda (w) (with-current-buffer (window-buffer w)
-                          (derived-mode-p 'diff-review-sidebar-mode)))
-            (window-list frame 'no-minibuffer)))
+;; A sidebar window and the window it is attached to point at each other
+;; through window parameters; the link holds while both ends agree.
 
-(defun diff-review--show-sidebar (review)
-  "Show REVIEW's sidebar in the selected frame, replacing another review's."
-  (let ((sidebar (diff-review--sidebar-buffer review))
-        (window (diff-review--sidebar-window (selected-frame))))
-    (unless (and window (eq (window-buffer window) sidebar))
-      (when window (delete-window window))
-      (display-buffer sidebar
-                      `((display-buffer-in-side-window)
-                        (side . ,diff-review-sidebar-side)
-                        (slot . 0)
-                        (window-width . ,diff-review-sidebar-width)
-                        (dedicated . t)
-                        (window-parameters . ((no-delete-other-windows . t)))))
-      (with-current-buffer sidebar (diff-review-sidebar--render)))))
+(defun diff-review--sidebar-window (window)
+  "The sidebar window attached to WINDOW, or nil."
+  (let ((sidebar (window-parameter window 'diff-review-sidebar)))
+    (and (window-live-p sidebar)
+         (eq (window-parameter sidebar 'diff-review-main) window)
+         sidebar)))
 
-(defun diff-review--hide-sidebar (frame)
-  "Remove the review sidebar from FRAME, if any."
-  (when-let* ((window (diff-review--sidebar-window frame)))
-    (delete-window window)))
+(defun diff-review--attach (window sidebar)
+  "Show SIDEBAR beside WINDOW, the two as one atomic window."
+  (when-let* ((new (display-buffer-in-atom-window
+                    sidebar `((window . ,window)
+                              (side . ,diff-review-sidebar-side)
+                              (window-width . ,diff-review-sidebar-width)
+                              (dedicated . t)))))
+    (set-window-parameter new 'diff-review-main window)
+    (set-window-parameter window 'diff-review-sidebar new)
+    (with-current-buffer sidebar (diff-review-sidebar--render))))
+
+(defun diff-review--detach (sidebar)
+  "Delete the sidebar window SIDEBAR, freeing the window it was attached to."
+  (let ((main (window-parameter sidebar 'diff-review-main)))
+    (let ((ignore-window-parameters t))   ; else the whole atomic window goes
+      (delete-window sidebar))
+    (when (window-live-p main)
+      (set-window-parameter main 'window-atom nil)
+      (set-window-parameter main 'diff-review-sidebar nil))))
+
+(defun diff-review-sidebar--close ()
+  "Delete the windows of the sidebar buffer being killed."
+  (mapc #'diff-review--detach (get-buffer-window-list nil nil t)))
 
 (defun diff-review--follow (&optional frame)
-  "Show the selected window's review sidebar, or hide the sidebar.
-Runs after a window changes buffer or selection; side windows and the
-minibuffer are ignored, so popups do not disturb the sidebar."
-  (let* ((frame (if (framep frame) frame (selected-frame)))
-         (window (frame-selected-window frame)))
-    (unless (or (window-parameter window 'window-side)
-                (window-minibuffer-p window))
-      (let ((review (with-current-buffer (window-buffer window)
-                      (diff-review--review-buffer))))
-        (if (and review (buffer-local-value 'diff-review--sidebar-enabled review))
-            (with-selected-frame frame
-              (with-current-buffer review (setq diff-review--main-window window))
-              (diff-review--show-sidebar review))
-          (diff-review--hide-sidebar frame))))))
+  "Give each window of FRAME the sidebar its buffer's review wants, or none.
+Runs after a window of FRAME changes buffer."
+  (dolist (window (window-list (if (framep frame) frame (selected-frame)) 'no-minibuffer))
+    (when (window-live-p window)        ; not deleted earlier in this loop
+      (with-current-buffer (window-buffer window)
+        (if (derived-mode-p 'diff-review-sidebar-mode)
+            (let ((main (window-parameter window 'diff-review-main)))
+              (unless (and (window-live-p main)
+                           (eq (diff-review--sidebar-window main) window))
+                (diff-review--detach window)))   ; an orphan: restored or left behind
+          (let* ((review (diff-review--review-buffer))
+                 (wanted (and review
+                              (buffer-local-value 'diff-review--sidebar-enabled review)
+                              (diff-review--sidebar-buffer review)))
+                 (sidebar (diff-review--sidebar-window window)))
+            (unless (eq (and sidebar (window-buffer sidebar)) wanted)
+              (when sidebar (diff-review--detach sidebar))
+              (when wanted (diff-review--attach window wanted)))))))))
 
-(add-hook 'window-selection-change-functions #'diff-review--follow)
 (add-hook 'window-buffer-change-functions #'diff-review--follow)
 
 ;;;; Showing a file
 
-(defun diff-review--main-window (review)
-  "REVIEW's main window.
-The one it last showed in, else the selected window, else any usable one."
-  (with-current-buffer review
-    (cond ((and (window-live-p diff-review--main-window)
-                (not (window-parameter diff-review--main-window 'window-side)))
-           diff-review--main-window)
-          ((not (or (window-parameter (selected-window) 'window-side)
-                    (window-minibuffer-p (selected-window))))
-           (selected-window))
-          (t (or (get-mru-window nil nil t)
-                 (seq-find (lambda (w) (not (window-parameter w 'window-side)))
-                           (window-list nil 'no-minibuffer)))))))
+(defun diff-review--main-window ()
+  "The window to show the review in.
+The selected one, or the one the selected sidebar is attached to."
+  (or (window-parameter (selected-window) 'diff-review-main)
+      (selected-window)))
 
-(defun diff-review--show-in-main (review buffer)
-  "Show BUFFER in REVIEW's main window and select it."
-  (let ((window (diff-review--main-window review)))
+(defun diff-review--show-in-main (buffer)
+  "Show BUFFER in the review's window and select it.
+The window's history is left as it was, so quitting or killing the
+review goes back to what the window showed before it."
+  (let* ((window (diff-review--main-window))
+         (prev (window-prev-buffers window))
+         (next (window-next-buffers window)))
     (set-window-dedicated-p window nil)
     (set-window-buffer window buffer)
+    (set-window-prev-buffers window prev)
+    (set-window-next-buffers window next)
     (select-window window)
-    (with-current-buffer review (setq diff-review--main-window window))
     window))
 
 (defun diff-review--blob-buffer (rev path &optional deleted)
@@ -709,6 +750,8 @@ The one it last showed in, else the selected window, else any usable one."
 (defun diff-review--open (i)
   "Show file I in the main window, at its first hunk, and sync the lists.
 The review buffer must be current."
+  (unless (< -1 i (length diff-review--files))
+    (user-error "The review has no files"))
   (setq diff-review--index i)
   (let* ((review (current-buffer))
          (file (diff-review--file i))
@@ -721,7 +764,7 @@ The review buffer must be current."
       (setq diff-review--review review)
       (diff-review-file-mode 1))
     (diff-review--render-all)
-    (diff-review--show-in-main review buffer)
+    (diff-review--show-in-main buffer)
     (with-current-buffer buffer          ; the caller may be in the review buffer
       (goto-char (point-min))
       (when diff-review--hunks
@@ -752,6 +795,7 @@ The review buffer must be current."
     (nreverse hunks)))
 
 (defun diff-review--line-pos (line)
+  "The position where LINE starts."
   (save-excursion
     (goto-char (point-min))
     (forward-line (1- line))
@@ -847,6 +891,7 @@ The review buffer must be current."
         (setq line (max line (1+ (cdr range))))))))
 
 (defun diff-review--undecorate ()
+  "Remove the review overlays from this buffer."
   (mapc #'delete-overlay diff-review--overlays)
   (setq diff-review--overlays nil))
 
@@ -859,6 +904,7 @@ The review buffer must be current."
     found))
 
 (defun diff-review--file-header ()
+  "The header line of a file: its place, status, path, counts, hunk and keys."
   (let* ((hunk (diff-review--hunk-number))
          (hunks (length diff-review--hunks))
          (focus diff-review--focus)
@@ -887,6 +933,7 @@ The review buffer must be current."
          (propertize keys 'face 'shadow))))))
 
 (defun diff-review--goto-hunk (hunk)
+  "Move to where HUNK starts, near the top of the window."
   (goto-char (diff-review--line-pos (diff-review--hunk-line hunk)))
   (recenter 6))
 
@@ -944,7 +991,8 @@ The review buffer must be current."
   "C-c C-d" #'diff-review-toggle-inline-removed
   "C-c C-z" #'diff-review-toggle-focus
   "C-c C-t" #'diff-review-toggle-sidebar
-  "C-c C-l" #'diff-review-overview)
+  "C-c C-l" #'diff-review-overview
+  "C-c C-q" #'diff-review-quit)
 
 (define-minor-mode diff-review-file-mode
   "Review decorations and keys in a file of a review.
@@ -952,8 +1000,9 @@ The review buffer must be current."
 hunks, across files.  \\[diff-review-viewed-and-next] marks the file viewed and
 moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
 \\[diff-review-toggle-inline-removed] hides the removed lines,
-\\[diff-review-toggle-sidebar] shows or hides the sidebar and
-\\[diff-review-overview] goes back to the overview."
+\\[diff-review-toggle-sidebar] shows or hides the sidebar,
+\\[diff-review-overview] goes back to the overview and
+\\[diff-review-quit] ends the review."
   :lighter " Review"
   (if diff-review-file-mode
       (progn
@@ -975,7 +1024,7 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
 ;; file.  A file is being edited, so its keys
 ;; stay off the editing ones: ]c and [c walk the hunks, ]] and [[ the files,
 ;; zv marks viewed and moves on, zf folds, zd hides the removed lines, gs
-;; toggles the sidebar and gl goes back to the overview.
+;; toggles the sidebar, gl goes back to the overview and gq ends the review.
 
 (declare-function evil-set-initial-state "evil-core")
 (declare-function evil-define-key* "evil-core")
@@ -1000,7 +1049,7 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
       "gr" #'diff-review-refresh
       "q" (if (eq map diff-review-sidebar-mode-map)
               #'diff-review-toggle-sidebar
-            #'quit-window)))
+            #'diff-review-quit)))
   (evil-define-minor-mode-key 'normal 'diff-review-file-mode
     "]c" #'diff-review-next-hunk
     "[c" #'diff-review-previous-hunk
@@ -1010,7 +1059,8 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
     "zf" #'diff-review-toggle-focus
     "zd" #'diff-review-toggle-inline-removed
     "gs" #'diff-review-toggle-sidebar
-    "gl" #'diff-review-overview))
+    "gl" #'diff-review-overview
+    "gq" #'diff-review-quit))
 
 ;;;; Creating a review
 
