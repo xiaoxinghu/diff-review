@@ -190,6 +190,65 @@ The repository has two commits and a dirty worktree touching two files."
         (should-not (buffer-live-p blob))
         (should (eq (window-buffer w) before))))))
 
+;;;; Nothing outside a review is touched
+
+(ert-deftest diff-review-test-hook-lives-with-the-reviews ()
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (should-not (memq #'diff-review--follow window-buffer-change-functions))
+    (let ((one (diff-review-test--open repo))
+          (two (diff-review-test--open repo "head.json" "HEAD^" "HEAD")))
+      (should (memq #'diff-review--follow window-buffer-change-functions))
+      (with-current-buffer one (diff-review-quit))
+      (should (memq #'diff-review--follow window-buffer-change-functions))
+      (with-current-buffer two (diff-review-quit))
+      (should-not (memq #'diff-review--follow window-buffer-change-functions)))))
+
+(ert-deftest diff-review-test-dedicated-window-stays-dedicated ()
+  "The review's own window keeps its dedication through the files and after."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (let ((before (get-buffer-create "before")) (w (selected-window)))
+      (switch-to-buffer before)
+      (diff-review-test--open repo)
+      (set-window-dedicated-p w t)
+      (diff-review-next-file)
+      (should (equal (buffer-name (window-buffer w)) "b.txt"))
+      (should (eq (window-dedicated-p w) t))
+      (set-buffer (window-buffer w))
+      (diff-review-quit)
+      (should (eq (window-buffer w) before))
+      (should (eq (window-dedicated-p w) t)))))
+
+(ert-deftest diff-review-test-dedicated-window-outside-is-left-alone ()
+  "A file does not take a window dedicated to something outside the review."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (let ((review (diff-review-test--open repo))
+          (other (get-buffer-create "other"))
+          (w (split-window-right)))
+      (set-window-buffer w other)
+      (set-window-dedicated-p w t)
+      (select-window w)
+      (with-current-buffer review (diff-review-next-file))
+      (should (eq (window-buffer w) other))
+      (should (eq (window-dedicated-p w) t))
+      (should (equal (buffer-name (window-buffer)) "b.txt")))))
+
+(ert-deftest diff-review-test-click-on-file-lines-only ()
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (let ((review (diff-review-test--open repo)) (w (selected-window)))
+      (goto-char (point-min))
+      (should-not (mouse-on-link-p (point)))
+      (should-not (eq (key-binding [mouse-1] nil nil (point)) #'diff-review-mouse-open))
+      (should-not (eq (key-binding [mouse-2] nil nil (point)) #'diff-review-mouse-open))
+      (let ((file (text-property-any (point-min) (point-max) 'diff-review-index 0)))
+        (should (mouse-on-link-p file))
+        (should (eq (key-binding [mouse-2] nil nil file) #'diff-review-mouse-open))
+        (diff-review-mouse-open `(mouse-2 (,w ,file (0 . 0) 0)))
+        (should (eq (buffer-local-value 'diff-review--review (window-buffer w)) review))))))
+
 ;;;; The review's state stays inside the review
 
 (ert-deftest diff-review-test-header-line-comes-back ()

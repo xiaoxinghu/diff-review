@@ -410,6 +410,10 @@ Returns t, as `write-contents-functions' expects."
     (concat (propertize " " 'display `(space :align-to (- right ,(1+ (string-width stats)))))
             stats)))
 
+(defvar-keymap diff-review-file-line-map
+  :doc "Keymap on a file's line in a list: a click shows the file."
+  "<mouse-2>" #'diff-review-mouse-open)
+
 (defun diff-review--file-line (i indent)
   "The list line of file I, after INDENT."
   (let* ((file (diff-review--file i))
@@ -428,6 +432,9 @@ Returns t, as `write-contents-functions' expects."
                                                  'face 'success)))
                         "\n")
                 'diff-review-index i
+                'keymap diff-review-file-line-map
+                'follow-link t
+                'mouse-face 'highlight
                 'help-echo (if (plist-get file :old)
                                (format "%s %s %s"
                                        (plist-get file :old) (diff-review--glyph "→" "->") path)
@@ -632,7 +639,6 @@ A file that changed since it was viewed loses its mark."
   :doc "Keymap for `diff-review-mode', shared with the sidebar."
   :parent magit-section-mode-map
   "RET" #'diff-review-open-at-point
-  "<mouse-1>" #'diff-review-mouse-open
   "n" #'diff-review-next-file
   "p" #'diff-review-previous-file
   "u" #'diff-review-next-unviewed
@@ -645,7 +651,8 @@ A file that changed since it was viewed loses its mark."
 (define-derived-mode diff-review-mode magit-section-mode "Review"
   "Major mode for a review file: an overview of what a worktree changed.
 \\<diff-review-mode-map>\\[diff-review-open-at-point] shows the file at point in this window,
-or folds a directory.  \\[diff-review-next-file] and \\[diff-review-previous-file] walk the files;
+or folds a directory; a click on a file shows it too.
+\\[diff-review-next-file] and \\[diff-review-previous-file] walk the files;
 \\[diff-review-next-unviewed] skips to the next unviewed one.
 \\[diff-review-toggle-viewed] toggles the viewed mark, \\[diff-review-refresh] rescans
 and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
@@ -659,6 +666,8 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
         diff-review--inline-removed diff-review-inline-removed)
   (add-hook 'write-contents-functions #'diff-review--write nil t)
   (add-hook 'kill-buffer-hook #'diff-review--close nil t)
+  ;; Global, so it lives only while there is a review: see `diff-review--close'.
+  (add-hook 'window-buffer-change-functions #'diff-review--follow)
   (display-line-numbers-mode -1)
   (auto-revert-mode 1)
   (diff-review--load))
@@ -670,7 +679,8 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
 (defun diff-review--close ()
   "End the review being killed: its files' decorations and its sidebar.
 Windows showing its files go back to what they showed before the
-review; buffers showing a revision of a file are killed."
+review; buffers showing a revision of a file are killed.  The last
+review to go takes `diff-review--follow' off the window hook."
   (let ((review (current-buffer)))
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
@@ -679,9 +689,15 @@ review; buffers showing a revision of a file are killed."
             (if buffer-file-name (diff-review-file-mode -1) (kill-buffer))
             (dolist (window windows)   ; a killed buffer has left its windows already
               (when (eq (window-buffer window) buffer)
-                (switch-to-prev-buffer window)))))))
+                (diff-review--undedicated window #'switch-to-prev-buffer window)))))))
     (when (buffer-live-p diff-review--sidebar)
-      (kill-buffer diff-review--sidebar))))
+      (kill-buffer diff-review--sidebar))
+    (unless (seq-some (lambda (buffer)
+                        (and (not (eq buffer review))
+                             (provided-mode-derived-p (buffer-local-value 'major-mode buffer)
+                                                      'diff-review-mode)))
+                      (buffer-list))
+      (remove-hook 'window-buffer-change-functions #'diff-review--follow))))
 
 ;;;; The sidebar
 
@@ -793,8 +809,6 @@ Runs after a window of FRAME changes buffer."
               (when sidebar (diff-review--detach sidebar))
               (when wanted (diff-review--attach window wanted)))))))))
 
-(add-hook 'window-buffer-change-functions #'diff-review--follow)
-
 ;;;; Showing a file
 
 (defun diff-review--main-window ()
@@ -803,19 +817,33 @@ The selected one, or the one the selected sidebar is attached to."
   (or (window-parameter (selected-window) 'diff-review-main)
       (selected-window)))
 
+(defun diff-review--undedicated (window fn &rest args)
+  "Apply FN to ARGS with WINDOW undedicated, then dedicate it as it was."
+  (let ((dedicated (window-dedicated-p window)))
+    (set-window-dedicated-p window nil)
+    (unwind-protect (apply fn args)
+      (when (window-live-p window)
+        (set-window-dedicated-p window dedicated)))))
+
 (defun diff-review--show-in-main (buffer)
   "Show BUFFER in the review's window and select it.
 The window's history is left as it was, so quitting or killing the
-review goes back to what the window showed before it."
-  (let* ((window (diff-review--main-window))
-         (prev (window-prev-buffers window))
-         (next (window-next-buffers window)))
-    (set-window-dedicated-p window nil)
-    (set-window-buffer window buffer)
-    (set-window-prev-buffers window prev)
-    (set-window-next-buffers window next)
-    (select-window window)
-    window))
+review goes back to what the window showed before it.  A window
+dedicated to something outside the review is not the review's to
+take: then BUFFER goes where `display-buffer' says."
+  (let ((window (diff-review--main-window)))
+    (if (and (window-dedicated-p window)
+             (not (eq (with-current-buffer (window-buffer window) (diff-review--review-buffer))
+                      (with-current-buffer buffer (diff-review--review-buffer)))))
+        (progn (pop-to-buffer-same-window buffer)
+               (selected-window))
+      (let ((prev (window-prev-buffers window))
+            (next (window-next-buffers window)))
+        (diff-review--undedicated window #'set-window-buffer window buffer)
+        (set-window-prev-buffers window prev)
+        (set-window-next-buffers window next)
+        (select-window window)
+        window))))
 
 (defun diff-review--blob-buffer (rev path &optional deleted)
   "A read-only buffer with PATH as it is at REV; DELETED when the file is gone."
