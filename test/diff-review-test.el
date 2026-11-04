@@ -11,6 +11,7 @@
 
 (require 'ert)
 (require 'diff-review)
+(require 'hl-line)
 
 (defun diff-review-test--git (&rest args)
   (unless (zerop (apply #'call-process "git" nil nil nil
@@ -266,6 +267,55 @@ The repository has two commits and a dirty worktree touching two files."
           (should (eq (keymap-lookup diff-review-file-mode-map "C-c r n")
                       #'diff-review-next-hunk)))
       (customize-set-variable 'diff-review-command-prefix prefix))))
+
+;;;; Appearance is the user's
+
+(ert-deftest diff-review-test-customize-group ()
+  (let ((members (mapcar #'car (get 'diff-review 'custom-group))))
+    (dolist (symbol '(diff-review-title diff-review-file-added diff-review-file-deleted
+                      diff-review-file-changed diff-review-unchanged
+                      diff-review-tint-added diff-review-tint-removed
+                      diff-review-hunk-recenter))
+      (should (memq symbol members)))))
+
+(ert-deftest diff-review-test-display-modes-are-left-alone ()
+  "Neither list turns on `hl-line-mode' nor hides the cursor."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (let ((review (diff-review-test--open repo)))
+      (should-not (buffer-local-value 'hl-line-mode review))
+      (with-current-buffer (buffer-local-value 'diff-review--sidebar review)
+        (should-not hl-line-mode)
+        (should cursor-type)))))
+
+(defun diff-review-test--faces (buffer)
+  "The faces of BUFFER's review overlays and of their inline removed lines."
+  (with-current-buffer buffer
+    (mapcan (lambda (o)
+              (cons (overlay-get o 'face)
+                    (when-let* ((s (overlay-get o 'before-string)))
+                      (list (get-text-property 0 'face s)))))
+            diff-review--overlays)))
+
+(ert-deftest diff-review-test-tints-switch-off ()
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--open repo)
+    (diff-review-next-file)
+    (let ((file (window-buffer)))
+      (should (seq-some #'identity (diff-review-test--faces file)))
+      (let ((diff-review-tint-added nil) (diff-review-tint-removed nil))
+        (with-current-buffer file (diff-review--decorate))
+        (should (with-current-buffer file
+                  (seq-some (lambda (o) (overlay-get o 'before-string)) diff-review--overlays)))
+        (should-not (seq-some #'identity (diff-review-test--faces file)))))))
+
+(ert-deftest diff-review-test-glyph-falls-back ()
+  (cl-letf (((symbol-function 'display-graphic-p) #'ignore)
+            ((symbol-function 'char-displayable-p) #'ignore))
+    (should (equal (diff-review--glyph "←" "<-") "<-")))
+  (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
+    (should (equal (diff-review--glyph "←" "<-") "←"))))
 
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here
