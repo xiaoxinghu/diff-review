@@ -310,6 +310,12 @@ The repository has two commits and a dirty worktree touching two files."
                   (seq-some (lambda (o) (overlay-get o 'before-string)) diff-review--overlays)))
         (should-not (seq-some #'identity (diff-review-test--faces file)))))))
 
+(ert-deftest diff-review-test-tint-leaves-the-hunk-bare ()
+  "Tinting the removed lines of a plain file does not touch the hunk's strings."
+  (let ((lines (list "old")))
+    (diff-review--removed-string lines 'fundamental-mode 'diff-review-removed)
+    (should-not (text-properties-at 0 (car lines)))))
+
 (ert-deftest diff-review-test-glyph-falls-back ()
   (cl-letf (((symbol-function 'display-graphic-p) #'ignore)
             ((symbol-function 'char-displayable-p) #'ignore))

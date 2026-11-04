@@ -889,7 +889,8 @@ The review buffer must be current."
 TINT, a face or nil, goes over the syntax faces."
   (let ((mark (diff-review--fringe-mark 'diff-indicator-removed)))
     (mapconcat (lambda (line)
-                 (let ((text (if (eq mode 'fundamental-mode) line
+                 (let ((text (if (eq mode 'fundamental-mode)
+                                 (copy-sequence line)   ; the hunk's own string: keep it bare
                                (diff-review--fontify line mode))))
                    (when tint (add-face-text-property 0 (length text) tint t text))
                    (concat mark text (propertize "\n" 'face tint))))
