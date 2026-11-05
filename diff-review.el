@@ -166,9 +166,8 @@ Without a background of its own, the background of `diff-removed' is used.")
 (defvar-local diff-review--focus nil "In a file buffer, whether unchanged lines are folded.")
 (defvar-local diff-review--deleted nil "In a buffer showing a deleted file's base version, t.")
 (defvar-local diff-review--blob nil "In a buffer showing a revision of a file, what identifies it.")
-(defvar-local diff-review--saved-header-line nil
-  "In a file buffer, its header line from before the review.
-Buffer-local only while there is one to restore.")
+(defvar-local diff-review--saved nil
+  "In a file buffer, the variables the review set: (VAR LOCAL . VALUE) from before.")
 (defvar diff-review-file-mode)
 
 (defun diff-review--review-buffer ()
@@ -1189,8 +1188,34 @@ shares is shown once, in front."
     (setq diff-review--inline-removed (not diff-review--inline-removed)))
   (diff-review--decorate))
 
+(defun diff-review--next-error (n &optional reset)
+  "Walk N hunks for `next-error', back when N is negative.
+RESET starts from the first hunk of the file."
+  ;; `next-error' calls this in the file it last walked from, which a walk
+  ;; into the next file leaves behind: walk the file the review shows.
+  (let ((review diff-review--review)
+        (window (diff-review--main-window)))
+    (if (with-current-buffer (window-buffer window)
+          (and diff-review-file-mode (eq diff-review--review review)))
+        (progn
+          (select-window window)
+          (when (and reset diff-review--hunks)
+            (diff-review--goto-hunk (car diff-review--hunks))
+            (setq n (max 0 (1- n))))
+          (dotimes (_ (abs n))
+            (with-current-buffer (window-buffer)   ; a step into another file shows it there
+              (if (< n 0) (diff-review-previous-hunk) (diff-review-next-hunk)))))
+      (diff-review--in-review (diff-review--open diff-review--index)))))
+
+(defun diff-review--set (var value)
+  "Set VAR to VALUE in this buffer until the review ends."
+  (unless (assq var diff-review--saved)    ; on again for the next visit
+    (push (cons var (cons (local-variable-p var) (symbol-value var))) diff-review--saved))
+  (set (make-local-variable var) value))
+
 (defvar-keymap diff-review-file-command-map
   :doc "The commands of `diff-review-file-mode', under `diff-review-command-prefix'."
+  :repeat t
   "n" #'diff-review-next-hunk
   "p" #'diff-review-previous-hunk
   "v" #'diff-review-viewed-and-next
@@ -1227,6 +1252,8 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
 \\[diff-review-toggle-sidebar] shows or hides the sidebar,
 \\[diff-review-overview] goes back to the overview and
 \\[diff-review-quit] ends the review.
+\\<global-map>\\[next-error] and \\[previous-error] walk the hunks too.  With `repeat-mode'
+the prefix is needed once, for a run of these keys.
 
 \\{diff-review-file-mode-map}"
   :lighter " Review"
@@ -1237,17 +1264,16 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
                   (list (list :line 1 :count 0 :removed nil))
                 (diff-review--in-review (diff-review--parse-hunks (diff-review--file)))))
         (diff-review--decorate)
+        (diff-review--set 'next-error-function #'diff-review--next-error)
         (when diff-review-file-header
-          (unless (local-variable-p 'diff-review--saved-header-line) ; on again for the next visit
-            (setq diff-review--saved-header-line header-line-format))
-          (setq header-line-format
-                `(:eval (funcall ',(if (functionp diff-review-file-header)
-                                       diff-review-file-header
-                                     #'diff-review--file-header))))))
+          (diff-review--set 'header-line-format
+                            `(:eval (funcall ',(if (functionp diff-review-file-header)
+                                                   diff-review-file-header
+                                                 #'diff-review--file-header))))))
     (diff-review--undecorate)
-    (when (local-variable-p 'diff-review--saved-header-line)
-      (setq header-line-format diff-review--saved-header-line)
-      (kill-local-variable 'diff-review--saved-header-line))
+    (pcase-dolist (`(,var ,local . ,value) diff-review--saved)
+      (if local (set var value) (kill-local-variable var)))
+    (kill-local-variable 'diff-review--saved)
     (setq diff-review--review nil)))
 
 ;;;; Evil
