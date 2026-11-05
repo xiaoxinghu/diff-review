@@ -124,3 +124,6 @@ gives it back.
 ## Check
 
 `make check` byte-compiles without warnings, runs checkdoc and the ERT tests.
+It reads no Emacs config: the first run fetches magit-section from MELPA into
+`.deps/` (`make deps`), and `rm -rf .deps` starts over. `EMACS=...` picks the
+Emacs.
