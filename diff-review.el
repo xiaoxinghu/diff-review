@@ -1077,14 +1077,43 @@ TINT, a face or nil, goes over the syntax faces."
       (when (<= (diff-review--hunk-line hunk) line) (setq found n)))
     found))
 
+(defun diff-review--key-hints (hints)
+  "HINTS, a list of (COMMAND . LABEL), as keys and dimmed labels.
+Each key is the one the active maps give, as `substitute-command-keys'
+finds it, so the hints follow the user's bindings.  A prefix every key
+shares is shown once, in front."
+  (let* ((keys (mapcar (lambda (hint) (where-is-internal (car hint) nil t)) hints))
+         (prefixes (mapcar (lambda (key) (and (> (length key) 1) (substring key 0 -1)))
+                           keys))
+         (prefix (and (car prefixes)
+                      (seq-every-p (lambda (p) (equal p (car prefixes))) prefixes)
+                      (car prefixes)))
+         (key-text (lambda (key)
+                     (propertize (key-description key)
+                                 'face 'help-key-binding 'font-lock-face 'help-key-binding))))
+    (concat
+     (if prefix (concat (funcall key-text prefix) "  ") "")
+     (string-join
+      (cl-mapcar (lambda (key hint)
+                   (concat (cond ((null key) ; M-x cmd, as substitute-command-keys has it
+                                  (substitute-command-keys (format "\\[%s]" (car hint))))
+                                 (prefix (funcall key-text (substring key -1)))
+                                 (t (funcall key-text key)))
+                           (propertize (concat " " (cdr hint)) 'face 'shadow)))
+                 keys hints)
+      (propertize " · " 'face 'shadow)))))
+
 (defun diff-review--file-header ()
   "The header line of a file: its place, status, path, counts, hunk and keys."
   (let* ((hunk (diff-review--hunk-number))
          (hunks (length diff-review--hunks))
          (focus diff-review--focus)
          (keys (if diff-review-file-header-keys
-                   (substitute-command-keys   ; in this buffer, where the file keymap is active
-                    "   \\[diff-review-next-hunk] next hunk · \\[diff-review-viewed-and-next] viewed · \\[diff-review-toggle-focus] focus · \\[diff-review-overview] overview")
+                   (concat "   " (diff-review--key-hints
+                                  '((diff-review-next-hunk . "next hunk")
+                                    (diff-review-viewed-and-next . "viewed")
+                                    (diff-review-toggle-focus . "focus")
+                                    (diff-review-overview . "overview"))))
                  "")))
     (diff-review--in-review
       (let ((file (diff-review--file)))
@@ -1106,7 +1135,7 @@ TINT, a face or nil, goes over the syntax faces."
              (propertize (concat (diff-review--glyph "✓" "*") " viewed") 'face 'success)
            (propertize (concat (diff-review--glyph "○" "o") " not viewed") 'face 'shadow))
          (propertize (if focus "   focus" "") 'face 'shadow)
-         (propertize keys 'face 'shadow))))))
+         keys)))))
 
 (defun diff-review--goto-hunk (hunk)
   "Move to where HUNK starts, near the top of the window."
@@ -1197,7 +1226,9 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
 \\[diff-review-toggle-inline-removed] hides the removed lines,
 \\[diff-review-toggle-sidebar] shows or hides the sidebar,
 \\[diff-review-overview] goes back to the overview and
-\\[diff-review-quit] ends the review."
+\\[diff-review-quit] ends the review.
+
+\\{diff-review-file-mode-map}"
   :lighter " Review"
   (if diff-review-file-mode
       (progn
