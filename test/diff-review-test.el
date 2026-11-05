@@ -273,11 +273,13 @@ The repository has two commits and a dirty worktree touching two files."
     (delete-other-windows)
     (let ((review (diff-review-test--open repo)) (w (selected-window)))
       (goto-char (point-min))
-      (should-not (mouse-on-link-p (point)))
+      ;; A posn, as a click gives: 29.1's `mouse-on-link-p' fails on a bare
+      ;; position without `follow-link'.
+      (should-not (mouse-on-link-p `(,w ,(point) (0 . 0) 0)))
       (should-not (eq (key-binding [mouse-1] nil nil (point)) #'diff-review-mouse-open))
       (should-not (eq (key-binding [mouse-2] nil nil (point)) #'diff-review-mouse-open))
       (let ((file (text-property-any (point-min) (point-max) 'diff-review-index 0)))
-        (should (mouse-on-link-p file))
+        (should (mouse-on-link-p `(,w ,file (0 . 0) 0)))
         (should (eq (key-binding [mouse-2] nil nil file) #'diff-review-mouse-open))
         (diff-review-mouse-open `(mouse-2 (,w ,file (0 . 0) 0)))
         (should (eq (buffer-local-value 'diff-review--review (window-buffer w)) review))))))
