@@ -11,7 +11,9 @@ they change again.
 A review compares the worktree with the merge base of a base branch, or two
 commits. A sidebar shows the file tree beside the window the review shows in,
 as its atomic partner, so the review can sit in any split and the tree stays
-next to it.
+next to it. Drag its edge or use `C-x {` `C-x }` to resize it; the review
+keeps that width, through `balance-windows` and hiding the sidebar.
+`diff-review-sidebar-width` is where each review starts.
 
 ## Install
 

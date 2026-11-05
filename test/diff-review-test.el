@@ -140,6 +140,34 @@ The repository has two commits and a dirty worktree touching two files."
       (delete-window)
       (should (= (length (window-list)) 1)))))
 
+(ert-deftest diff-review-test-sidebar-resizes-and-keeps-its-width ()
+  "The user resizes the sidebar; balancing and a hide and show keep the width."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--open repo)
+    (let* ((main (selected-window))
+           (review (window-buffer main))
+           (sidebar (diff-review-test--sidebar main)))
+      (should-not (buffer-local-value 'window-size-fixed (window-buffer sidebar)))
+      (should (window-preserved-size sidebar t))
+      (should (= (window-total-width sidebar) 20))
+      (adjust-window-trailing-edge sidebar 6 t)       ; a drag on its edge
+      (should (= (window-total-width sidebar) 26))
+      (diff-review-sidebar--resized sidebar)          ; what redisplay would run
+      (should (= (buffer-local-value 'diff-review--sidebar-width review) 26))
+      (balance-windows)
+      (should (= (window-total-width sidebar) 26))
+      (with-selected-window sidebar (enlarge-window 4 t))   ; C-x }
+      (should (= (window-total-width sidebar) 30))
+      (diff-review-sidebar--resized sidebar)
+      (balance-windows)
+      (should (= (window-total-width sidebar) 30))
+      (diff-review-toggle-sidebar)
+      (diff-review-toggle-sidebar)
+      (let ((again (diff-review-test--sidebar main)))
+        (should (= (window-total-width again) 30))
+        (should (window-preserved-size again t))))))
+
 ;;;; Ending a review gives the window back
 
 (ert-deftest diff-review-test-kill-shows-what-the-window-showed-before ()

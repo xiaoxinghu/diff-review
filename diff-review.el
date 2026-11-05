@@ -97,7 +97,8 @@ The header line the buffer had comes back when the review ends."
   :type 'boolean)
 
 (defcustom diff-review-sidebar-width 36
-  "Width of the sidebar, in columns."
+  "Width of the sidebar, in columns, when a review starts.
+Resizing the sidebar changes its width for the rest of that review."
   :type 'integer)
 
 (defcustom diff-review-sidebar-side 'left
@@ -156,6 +157,7 @@ Without a background of its own, the background of `diff-removed' is used.")
 (defvar-local diff-review--viewed nil "Hash table of path to the blob hash it was viewed at.")
 (defvar-local diff-review--sidebar nil "The sidebar buffer, once created.")
 (defvar-local diff-review--sidebar-enabled nil "Whether this review shows its sidebar.")
+(defvar-local diff-review--sidebar-width nil "The width of this review's sidebar, in columns.")
 (defvar-local diff-review--inline-removed nil "Whether this review shows removed lines inline.")
 
 ;; In a file buffer or the sidebar.
@@ -667,6 +669,7 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
   ;; every file buffer's auto-revert then runs this, leaving it modified.
   (setq-local revert-buffer-function #'diff-review--revert)
   (setq diff-review--sidebar-enabled diff-review-sidebar
+        diff-review--sidebar-width diff-review-sidebar-width
         diff-review--inline-removed diff-review-inline-removed)
   (add-hook 'write-contents-functions #'diff-review--write nil t)
   (add-hook 'kill-buffer-hook #'diff-review--close nil t)
@@ -733,10 +736,10 @@ as one atomic window.  The keys are those of `diff-review-mode';
 
 \\{diff-review-sidebar-mode-map}"
   ;; The header line carries the summary; a mode line under the tree adds nothing.
-  (setq window-size-fixed 'width
-        mode-line-format nil
+  (setq mode-line-format nil
         header-line-format '(:eval (diff-review-sidebar--header)))
   (add-hook 'kill-buffer-hook #'diff-review-sidebar--close nil t)
+  (add-hook 'window-size-change-functions #'diff-review-sidebar--resized nil t)
   (display-line-numbers-mode -1))
 
 (defun diff-review--sidebar-buffer (review)
@@ -789,11 +792,27 @@ as one atomic window.  The keys are those of `diff-review-mode';
   (when-let* ((new (display-buffer-in-atom-window
                     sidebar `((window . ,window)
                               (side . ,diff-review-sidebar-side)
-                              (window-width . ,diff-review-sidebar-width)
+                              (window-width
+                               . ,(with-current-buffer sidebar
+                                   (diff-review--in-review diff-review--sidebar-width)))
+                              ;; Kept through balancing and frame resizes;
+                              ;; the user's own resizing still works.
+                              (preserve-size . (t . nil))
                               (dedicated . t)))))
     (set-window-parameter new 'diff-review-main window)
     (set-window-parameter window 'diff-review-sidebar new)
     (with-current-buffer sidebar (diff-review-sidebar--render))))
+
+(defun diff-review-sidebar--resized (window)
+  "Keep the width WINDOW, a sidebar, was resized to.
+The review shows its sidebar at that width from now on, and the width is
+preserved again: a resize does not update a preserved width, nor does
+`enlarge-window' leave it preserved."
+  (when-let* ((review (with-current-buffer (window-buffer window)
+                        (diff-review--review-buffer))))
+    (with-current-buffer review
+      (setq diff-review--sidebar-width (window-total-width window)))
+    (window-preserve-size window t t)))
 
 (defun diff-review--detach (sidebar)
   "Delete the sidebar window SIDEBAR, freeing the window it was attached to."
