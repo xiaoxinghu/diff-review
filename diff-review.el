@@ -114,6 +114,10 @@ Without the tint they keep the fringe bar, which a terminal has not."
 Without the tint they keep the fringe bar, which a terminal has not."
   :type 'boolean)
 
+(defcustom diff-review-fringe 'left
+  "The fringe the hunk bars are drawn in, or nil for no bars."
+  :type '(choice (const left) (const right) (const :tag "No bars" nil)))
+
 (defcustom diff-review-hunk-recenter 6
   "The window line a hunk is shown on when moved to, or nil to center it."
   :type '(choice (integer :tag "Line from the top") (const :tag "Center" nil)))
@@ -943,7 +947,8 @@ The review buffer must be current."
       (1+ (plist-get hunk :line))
     (plist-get hunk :line)))
 
-(define-fringe-bitmap 'diff-review-bar [224] nil nil '(center repeated))
+(when (fboundp 'define-fringe-bitmap)   ; absent from a build without a window system
+  (define-fringe-bitmap 'diff-review-bar [224] nil nil '(center repeated)))
 
 (defun diff-review--tint (face source)
   "FACE as an overlay face, with SOURCE's background when FACE sets none."
@@ -954,10 +959,25 @@ The review buffer must be current."
       (list face `(:background ,borrowed :extend t)))))
 
 (defun diff-review--fringe-mark (face)
-  "A string that draws a bar in the left fringe of its line, in FACE."
-  (if (display-graphic-p)
-      (propertize " " 'display `(left-fringe diff-review-bar ,face))
+  "A string that draws a bar in `diff-review-fringe' on its line, in FACE.
+Empty without that option or the bitmap.  A text terminal draws nothing for
+it, so it is the same string on every frame."
+  (if (and diff-review-fringe (fboundp 'fringe-bitmap-p) (fringe-bitmap-p 'diff-review-bar))
+      (propertize " " 'display `(,(if (eq diff-review-fringe 'right) 'right-fringe 'left-fringe)
+                                 diff-review-bar ,face))
     ""))
+
+(defun diff-review--bars (start lines mark)
+  "Put MARK before each of LINES lines from START, in zero-width overlays.
+Not `line-prefix': an overlay's would hide the one `org-indent-mode' draws."
+  (unless (string-empty-p mark)
+    (save-excursion
+      (goto-char start)
+      (dotimes (_ lines)
+        (let ((overlay (make-overlay (point) (point))))
+          (overlay-put overlay 'before-string mark)
+          (push overlay diff-review--overlays))
+        (forward-line 1)))))
 
 (defun diff-review--fontify (lines mode)
   "Copies of LINES with the syntax faces MODE gives them, as one text.
@@ -995,24 +1015,29 @@ TINT, a face or nil, goes over the syntax faces."
     (if diff-review--deleted
         (let ((overlay (make-overlay (point-min) (point-max))))
           (overlay-put overlay 'face removed)
-          (overlay-put overlay 'line-prefix (diff-review--fringe-mark 'diff-indicator-removed))
-          (push overlay diff-review--overlays))
+          (push overlay diff-review--overlays)
+          (diff-review--bars (point-min) (count-lines (point-min) (point-max))
+                             (diff-review--fringe-mark 'diff-indicator-removed)))
       (dolist (hunk diff-review--hunks)
         (let* ((line (diff-review--hunk-line hunk))
                (start (diff-review--line-pos line))
                (count (plist-get hunk :count))
                (end (if (zerop count) start
                       (diff-review--line-pos (+ (plist-get hunk :line) count))))
-               (overlay (make-overlay start end nil t nil)))
-          (when (> count 0)
-            (overlay-put overlay 'face added)
-            (overlay-put overlay 'line-prefix (diff-review--fringe-mark 'diff-indicator-added)))
+               (overlay (make-overlay start end nil t nil))
+               (mark (if (> count 0) (diff-review--fringe-mark 'diff-indicator-added) ""))
+               above)
+          (overlay-put overlay 'face (and (> count 0) added))
           (when (and inline (plist-get hunk :removed))
             (let ((n (length (plist-get hunk :removed))))
-              (overlay-put overlay 'before-string
-                           (diff-review--removed-string (seq-take texts n) removed))
+              (setq above (diff-review--removed-string (seq-take texts n) removed))
               (setq texts (nthcdr n texts))))
-          (push overlay diff-review--overlays)))
+          ;; The first added line's bar goes after the removed lines, in one
+          ;; string: two before-strings at one place have no reliable order.
+          (overlay-put overlay 'before-string (concat above mark))
+          (push overlay diff-review--overlays)
+          (when (> count 1)
+            (diff-review--bars (diff-review--line-pos (1+ line)) (1- count) mark))))
       (when diff-review--focus (diff-review--fold)))))
 
 (defun diff-review--fold ()
