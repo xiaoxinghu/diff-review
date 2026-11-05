@@ -40,7 +40,7 @@
 ;;
 ;;   {"format": "diff-review/1",
 ;;    "root": "/path/to/worktree/",   optional: the file's repository
-;;    "base": "main",                  optional: the default branch
+;;    "base": "main",                  optional: `diff-review-default-base'
 ;;    "head": "abc1234",               optional: the worktree
 ;;    "viewed": {"src/a.ts": "<blob hash>"}}
 ;;
@@ -62,6 +62,14 @@
   "Review a git diff from a review file."
   :group 'tools
   :prefix "diff-review-")
+
+(defcustom diff-review-default-base #'diff-review-default-branch
+  "The base of a new review: a revision, or a function returning one.
+The function is called with `default-directory' at the repository's
+root.  A review file records the base it got, so changing this does
+not move an existing review."
+  :type '(choice (string :tag "Revision")
+                 (function :tag "Function returning a revision")))
 
 (defcustom diff-review-context 3
   "Unchanged lines kept around each hunk in focus mode."
@@ -180,18 +188,38 @@ Buffer-local only while there is one to restore.")
         (error "Git %s: %s" (string-join args " ") (string-trim (buffer-string))))
       (string-trim-right (buffer-string) "\n+"))))
 
+(defun diff-review--git-maybe (&rest args)
+  "Run git with ARGS in `default-directory': its output, or nil when it fails."
+  (with-temp-buffer
+    (and (zerop (apply #'process-file "git" nil '(t nil) nil args))
+         (string-trim (buffer-string)))))
+
 (defun diff-review--toplevel (directory)
   "The root of the repository holding DIRECTORY, or nil."
   (let ((default-directory directory))
-    (with-temp-buffer
-      (and (zerop (process-file "git" nil t nil "rev-parse" "--show-toplevel"))
-           (file-name-as-directory (string-trim (buffer-string)))))))
+    (when-let* ((top (diff-review--git-maybe "rev-parse" "--show-toplevel")))
+      (file-name-as-directory top))))
 
-(defun diff-review--default-base ()
-  "The default branch: what origin/HEAD points at, else main."
-  (let ((ref (ignore-errors
-               (diff-review--git "symbolic-ref" "--short" "refs/remotes/origin/HEAD"))))
-    (if (and ref (string-prefix-p "origin/" ref)) (substring ref 7) "main")))
+(defun diff-review-default-branch ()
+  "The default branch of the repository at `default-directory'.
+What origin/HEAD points at, else the first branch of `init.defaultBranch',
+main and master that exists, else main."
+  (or (when-let* ((ref (diff-review--git-maybe
+                        "symbolic-ref" "--short" "refs/remotes/origin/HEAD")))
+        (string-remove-prefix "origin/" ref))
+      (seq-find (lambda (branch)
+                  (diff-review--git-maybe "rev-parse" "--verify" "--quiet"
+                                          (concat "refs/heads/" branch)))
+                (delq nil (list (diff-review--git-maybe "config" "init.defaultBranch")
+                                "main" "master")))
+      "main"))
+
+(defun diff-review--default-base (root)
+  "The base of a new review of the repository at ROOT."
+  (if (functionp diff-review-default-base)
+      (let ((default-directory root))
+        (funcall diff-review-default-base))
+    diff-review-default-base))
 
 (defun diff-review--parse-name-status (output)
   "Parse the NUL-separated OUTPUT of `git diff --name-status -M -z'.
@@ -254,8 +282,13 @@ Return a hash table of path to (ADDED . REMOVED)."
   "Fill the file vector from git: four calls for any number of files."
   (setq diff-review--head-name (or diff-review--head
                                    (diff-review--git "rev-parse" "--abbrev-ref" "HEAD"))
-        diff-review--base (diff-review--git "merge-base" diff-review--base-name
-                                            (or diff-review--head "HEAD")))
+        diff-review--base
+        (condition-case err
+            (diff-review--git "merge-base" diff-review--base-name
+                              (or diff-review--head "HEAD"))
+          (error (user-error "No merge base with base %S: set \"base\" in the review \
+file, or `diff-review-default-base' for new reviews (%s)"
+                             diff-review--base-name (error-message-string err)))))
   (let* ((entries (sort (diff-review--parse-name-status
                          (apply #'diff-review--git "diff" "--name-status" "-M" "-z"
                                 (diff-review--range)))
@@ -300,7 +333,8 @@ Return a hash table of path to (ADDED . REMOVED)."
     (unless (file-directory-p diff-review--root)
       (user-error "The review's root %s does not exist" diff-review--root))
     (puthash "root" diff-review--root data)
-    (puthash "base" (or (gethash "base" data) (diff-review--default-base)) data)
+    (puthash "base" (or (gethash "base" data) (diff-review--default-base diff-review--root))
+             data)
     (unless (hash-table-p (gethash "viewed" data))
       (puthash "viewed" (make-hash-table :test #'equal) data))
     (setq diff-review--data data
@@ -1156,12 +1190,16 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
 (defun diff-review-find-file (file &optional root base head)
   "Visit review FILE, creating it first when it does not exist.
 A new file reviews the repository at ROOT, by default the one holding
-FILE, against BASE, by default the default branch.  It reviews revision
-HEAD when given, else the worktree.  Where FILE lives is the caller's
-choice."
+FILE, against BASE, by default `diff-review-default-base'.  It reviews
+revision HEAD when given, else the worktree.  Where FILE lives is the
+caller's choice."
   (interactive "FReview file: ")
   (unless (file-exists-p file)
     (make-directory (file-name-directory (expand-file-name file)) t)
+    (let ((top (if root
+                   (file-name-as-directory (expand-file-name root))
+                 (diff-review--toplevel (file-name-directory (expand-file-name file))))))
+      (setq base (or base (and top (diff-review--default-base top)))))
     (with-temp-file file
       (insert (json-serialize
                `((format . ,diff-review-format)

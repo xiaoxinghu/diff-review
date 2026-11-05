@@ -323,5 +323,74 @@ The repository has two commits and a dirty worktree touching two files."
   (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
     (should (equal (diff-review--glyph "←" "<-") "←"))))
 
+;;;; The default base is the user's
+
+(defmacro diff-review-test--without-git-config (&rest body)
+  "Run BODY with git reading no global or system config."
+  (declare (indent 0))
+  `(let ((process-environment (append '("GIT_CONFIG_GLOBAL=/dev/null"
+                                        "GIT_CONFIG_NOSYSTEM=1")
+                                      process-environment)))
+     ,@body))
+
+(ert-deftest diff-review-test-default-branch-order ()
+  "origin/HEAD, then init.defaultBranch, main and master that exist, then main."
+  (diff-review-test--with-repo
+    (diff-review-test--without-git-config
+      (diff-review-test--git "branch" "-m" "main" "work")
+      (should (equal (diff-review-default-branch) "main"))
+      (diff-review-test--git "branch" "master")
+      (should (equal (diff-review-default-branch) "master"))
+      (diff-review-test--git "branch" "main")
+      (should (equal (diff-review-default-branch) "main"))
+      (diff-review-test--git "config" "init.defaultBranch" "trunk")
+      (should (equal (diff-review-default-branch) "main"))
+      (diff-review-test--git "branch" "trunk")
+      (should (equal (diff-review-default-branch) "trunk"))
+      (diff-review-test--git "update-ref" "refs/remotes/origin/develop" "HEAD")
+      (diff-review-test--git "symbolic-ref" "refs/remotes/origin/HEAD"
+                             "refs/remotes/origin/develop")
+      (should (equal (diff-review-default-branch) "develop")))))
+
+(ert-deftest diff-review-test-new-review-on-master ()
+  "Without a remote, a repository on master is reviewed against master."
+  (diff-review-test--with-repo
+    (diff-review-test--without-git-config
+      (diff-review-test--git "branch" "-m" "main" "master")
+      (diff-review-find-file (expand-file-name "review.json" repo))
+      (should (equal diff-review--base-name "master"))
+      (should (equal (diff-review--git "rev-parse" "master") diff-review--base))
+      (should (string-match-p "\"base\": \"master\""
+                              (with-temp-buffer
+                                (insert-file-contents (expand-file-name "review.json" repo))
+                                (buffer-string)))))))
+
+(ert-deftest diff-review-test-default-base-string ()
+  (diff-review-test--with-repo
+    (let ((diff-review-default-base "HEAD~1"))
+      (diff-review-find-file (expand-file-name "review.json" repo))
+      (should (equal diff-review--base-name "HEAD~1")))))
+
+(ert-deftest diff-review-test-default-base-function-once ()
+  "The function is called once, at the root, and the file keeps its answer."
+  (diff-review-test--with-repo
+    (let* ((calls nil)
+           (diff-review-default-base (lambda () (push default-directory calls) "main"))
+           (file (expand-file-name "sub/review.json" repo)))
+      (diff-review-find-file file repo)
+      (should (equal calls (list repo)))
+      (kill-buffer)
+      (let ((diff-review-default-base "HEAD~1"))
+        (diff-review-find-file file)
+        (should (equal diff-review--base-name "main"))))))
+
+(ert-deftest diff-review-test-unknown-base-names-the-setting ()
+  (diff-review-test--with-repo
+    (with-current-buffer (diff-review-test--open repo)
+      (setq diff-review--base-name "nope")
+      (let ((err (should-error (diff-review--scan) :type 'user-error)))
+        (should (string-match-p "\"nope\".*\"base\".*diff-review-default-base"
+                                (cadr err)))))))
+
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here

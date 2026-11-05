@@ -25,7 +25,11 @@ Needs Emacs 29.1 and `magit-section`.
 ## Use
 
 `M-x diff-review-find-file` visits a review file, creating it when it does not
-exist: the repository holding the file, against its default branch. From Lisp,
+exist: the repository holding the file, against `diff-review-default-base`. That
+is a revision, or a function called at the repository's root; the default,
+`diff-review-default-branch`, takes what `origin/HEAD` points at, else the first
+of `init.defaultBranch`, `main` and `master` that exists. The file records the
+base it got, so changing the setting leaves existing reviews alone. From Lisp,
 `(diff-review-find-file FILE ROOT BASE HEAD)` reviews HEAD against BASE at ROOT,
 for a commit range. Where the file lives is the caller's choice.
 
