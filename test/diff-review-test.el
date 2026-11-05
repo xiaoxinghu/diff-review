@@ -192,6 +192,42 @@ The repository has two commits and a dirty worktree touching two files."
 
 ;;;; Nothing outside a review is touched
 
+(ert-deftest diff-review-test-revisiting-a-blob-reuses-it ()
+  "A second visit to a revision buffer keeps it, and leaves no stray overlay."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--open repo "head.json" "HEAD^" "HEAD")
+    (let ((review (current-buffer)) first)
+      (with-current-buffer review (diff-review--open 1))
+      (setq first (window-buffer))
+      (with-current-buffer review (diff-review--open 0))
+      (with-current-buffer review (diff-review--open 1))
+      (should (eq (window-buffer) first))
+      (with-current-buffer first
+        (should diff-review--overlays)
+        (should (= (length (overlays-in (point-min) (point-max)))
+                   (length diff-review--overlays)))
+        (should-not (seq-some (lambda (o) (= (overlay-start o) (overlay-end o)))
+                              (overlays-in (point-min) (point-max))))))))
+
+(ert-deftest diff-review-test-previous-hunk-lands-on-the-last-hunk ()
+  "Walking back into a file lands on its last hunk, not its first."
+  (diff-review-test--with-repo
+    (diff-review-test--write "a.txt" "a\nB\nc\nd\ne\nf\ng\n")   ; hunks at 2 and 4, end at 7
+    (diff-review-test--write "c.txt" "c\n")
+    (diff-review-test--git "add" "c.txt")
+    (diff-review-test--git "commit" "-q" "-am" "three")
+    (delete-other-windows)
+    (diff-review-test--open repo "range.json" "HEAD~2" "HEAD")
+    (diff-review--open 2)                 ; c.txt, after src/b.txt and a.txt
+    (with-current-buffer (window-buffer)
+      (should-not (seq-some (lambda (h) (< (diff-review--hunk-line h) (line-number-at-pos)))
+                            diff-review--hunks))
+      (diff-review-previous-hunk))
+    (with-current-buffer (window-buffer)
+      (should (equal (plist-get (diff-review--in-review (diff-review--file)) :path) "a.txt"))
+      (should (= (line-number-at-pos) 4)))))
+
 (ert-deftest diff-review-test-hook-lives-with-the-reviews ()
   (diff-review-test--with-repo
     (delete-other-windows)
@@ -405,7 +441,16 @@ The repository has two commits and a dirty worktree touching two files."
 (ert-deftest diff-review-test-tint-leaves-the-hunk-bare ()
   "Tinting the removed lines of a plain file does not touch the hunk's strings."
   (let ((lines (list "old")))
-    (diff-review--removed-string lines 'fundamental-mode 'diff-review-removed)
+    (diff-review--removed-string (diff-review--fontify lines 'fundamental-mode)
+                                 'diff-review-removed)
+    (should-not (text-properties-at 0 (car lines)))))
+
+(ert-deftest diff-review-test-fontify-keeps-the-lines ()
+  "Fontifying the removed lines together gives them back one by one, with faces."
+  (let* ((lines (list "(defun a ()" "" "  \"s\")"))
+         (texts (diff-review--fontify lines 'emacs-lisp-mode)))
+    (should (equal texts lines))
+    (should (get-text-property 1 'face (car texts)))
     (should-not (text-properties-at 0 (car lines)))))
 
 (ert-deftest diff-review-test-glyph-falls-back ()
