@@ -1199,9 +1199,12 @@ RESET starts from the first hunk of the file."
           (and diff-review-file-mode (eq diff-review--review review)))
         (progn
           (select-window window)
-          (when reset (goto-char (point-min)))
+          (when (and reset diff-review--hunks)
+            (diff-review--goto-hunk (car diff-review--hunks))
+            (setq n (max 0 (1- n))))
           (dotimes (_ (abs n))
-            (if (< n 0) (diff-review-previous-hunk) (diff-review-next-hunk))))
+            (with-current-buffer (window-buffer)   ; a step into another file shows it there
+              (if (< n 0) (diff-review-previous-hunk) (diff-review-next-hunk)))))
       (diff-review--in-review (diff-review--open diff-review--index)))))
 
 (defun diff-review--set (var value)

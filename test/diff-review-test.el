@@ -405,9 +405,10 @@ The repository has two commits and a dirty worktree touching two files."
 
 ;;;; The prefix once: repeat-mode and next-error
 
-(defun diff-review-test--at-a (repo)
-  "Show a.txt of REPO's review, changed at lines 2 and 4, with point at the top."
-  (diff-review-test--write "a.txt" "a\nX\nc\nD\n")
+(defun diff-review-test--at-a (repo &optional text)
+  "Show a.txt of REPO's review, as TEXT, with point at the top.
+TEXT defaults to changes at lines 2 and 4."
+  (diff-review-test--write "a.txt" (or text "a\nX\nc\nD\n"))
   (delete-other-windows)
   (diff-review-test--open repo)
   (diff-review--open (seq-position diff-review--files "a.txt"
@@ -454,6 +455,19 @@ The repository has two commits and a dirty worktree touching two files."
         (diff-review-quit)
         (should (eq (buffer-local-value 'next-error-function b) #'ignore))
         (should-not (local-variable-p 'next-error-function a))))))
+
+(ert-deftest diff-review-test-next-error-reset-and-count ()
+  "C-u M-g n goes to the first hunk, on line 1 too; M-2 M-g n counts across files."
+  (diff-review-test--with-repo
+    (let ((next-error-last-buffer nil))
+      (diff-review-test--at-a repo "X\nB\nc\nD\n")   ; hunks at 1 and 4
+      (forward-line 3)
+      (execute-kbd-macro (kbd "C-u M-g n"))
+      (should (diff-review-test--at "a.txt" 1))
+      (execute-kbd-macro (kbd "M-g p"))       ; src/b.txt, whose one hunk is line 1
+      (should (diff-review-test--at "src/b.txt" 1))
+      (execute-kbd-macro (kbd "M-2 M-g n"))
+      (should (diff-review-test--at "a.txt" 4)))))
 
 ;;;; Key help follows the user's keys
 
