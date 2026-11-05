@@ -72,6 +72,11 @@ keeps its own `C-c` keys:
 Set the prefix with `setopt` or Customize, or `setq` before loading; nil binds no keys at
 all, for binding `diff-review-file-command-map` or the commands yourself.
 
+The full list is Emacs's own help: `C-c _ C-h` lists the file commands, `C-h m`
+the whole mode, and outside Evil `?` does the same in the overview and the sidebar.
+With `which-key-mode`, built in since Emacs 30, pausing after `C-c _` shows
+its keys.
+
 With Evil, the lists start in normal state. Normal state takes `n`, `p`, `g`
 and `TAB`, so there `gj` `gk` walk the files, `gr` rescans and `TAB` folds a
 folder; `RET`, `u`, `v`, `t` and `q` are as above. In a file the prefix keys
@@ -93,8 +98,10 @@ For vim keys in a file, paste this; it shadows `gq` (`evil-fill-and-move`), and
     "gq" #'diff-review-quit))
 ```
 
-A file under review shows the review's header line, ending with key hints;
-`diff-review-file-header` can leave the buffer's own header line alone or name
+A file under review shows the review's header line, ending with key hints.
+They are the keys you have bound, so with the snippet above they read `] c`
+and `z v`; a prefix all the keys share shows once. `diff-review-file-header`
+can leave the buffer's own header line alone or name
 a function that makes one, and `diff-review-file-header-keys` drops the hints.
 The buffer's header line comes back when the review ends. Hiding the removed
 lines lasts for that review; `diff-review-inline-removed` is where each review

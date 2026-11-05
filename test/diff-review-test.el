@@ -403,6 +403,54 @@ The repository has two commits and a dirty worktree touching two files."
                       #'diff-review-next-hunk)))
       (customize-set-variable 'diff-review-command-prefix prefix))))
 
+;;;; Key help follows the user's keys
+
+(defun diff-review-test--header-keys ()
+  "The key hints of the selected window's file header, from the first key."
+  (with-current-buffer (window-buffer)
+    (let ((header (diff-review--file-header)))
+      (substring header (string-match "\\(C-c\\|\\]\\)" header)))))
+
+(ert-deftest diff-review-test-header-keys-share-the-prefix ()
+  "The prefix shows once; keys keep `help-key-binding', labels are `shadow'."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--open repo)
+    (diff-review-next-file)
+    (let ((keys (diff-review-test--header-keys)))
+      (should (equal (substring-no-properties keys)
+                     "C-c _  n next hunk · v viewed · z focus · l overview"))
+      (dolist (at '(0 4 7))                     ; C, _ and n
+        (should (eq (get-text-property at 'face keys) 'help-key-binding)))
+      (should (eq (get-text-property 9 'face keys) 'shadow)))))
+
+(ert-deftest diff-review-test-header-keys-in-full ()
+  "Keys with no shared prefix, as the README's Evil snippet binds, show in full."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--open repo)
+    (diff-review-next-file)
+    (let ((emulation-mode-map-alists     ; where Evil's state maps sit
+           `(((t . ,(define-keymap
+                      "] c" #'diff-review-next-hunk
+                      "z v" #'diff-review-viewed-and-next
+                      "z f" #'diff-review-toggle-focus
+                      "g l" #'diff-review-overview))))))
+      (should (equal (substring-no-properties (diff-review-test--header-keys))
+                     "] c next hunk · z v viewed · z f focus · g l overview")))))
+
+(ert-deftest diff-review-test-mode-help-lists-the-keys ()
+  "`C-h m' has a table of the prefix keys, and renders with no prefix."
+  (let ((prefix diff-review-command-prefix))
+    (unwind-protect
+        (progn
+          (should (string-match-p "C-c _ n\\s-+diff-review-next-hunk"
+                                  (documentation 'diff-review-file-mode)))
+          (customize-set-variable 'diff-review-command-prefix nil)
+          (should (string-match-p "M-x diff-review-next-hunk"
+                                  (documentation 'diff-review-file-mode))))
+      (customize-set-variable 'diff-review-command-prefix prefix))))
+
 ;;;; Appearance is the user's
 
 (ert-deftest diff-review-test-customize-group ()
