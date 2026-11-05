@@ -161,6 +161,7 @@ Without a background of its own, the background of `diff-removed' is used.")
 (defvar-local diff-review--overlays nil "In a file buffer, its review overlays.")
 (defvar-local diff-review--focus nil "In a file buffer, whether unchanged lines are folded.")
 (defvar-local diff-review--deleted nil "In a buffer showing a deleted file's base version, t.")
+(defvar-local diff-review--blob nil "In a buffer showing a revision of a file, what identifies it.")
 (defvar-local diff-review--saved-header-line nil
   "In a file buffer, its header line from before the review.
 Buffer-local only while there is one to restore.")
@@ -860,19 +861,25 @@ take: then BUFFER goes where `display-buffer' says."
         (select-window window)
         window))))
 
-(defun diff-review--blob-buffer (rev path &optional deleted)
-  "A read-only buffer with PATH as it is at REV; DELETED when the file is gone."
-  (let ((buffer (get-buffer-create (format "*%s: %s*" (if deleted "deleted" rev) path)))
-        (contents (diff-review--git "show" (concat rev ":" path)))
-        (root diff-review--root))
-    (with-current-buffer buffer
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert contents)
-        (let ((buffer-file-name (expand-file-name path root)))
-          (set-auto-mode))
-        (setq diff-review--deleted deleted)
-        (read-only-mode 1)))
+(defun diff-review--blob-buffer (rev path key &optional deleted)
+  "A read-only buffer with PATH as it is at REV; DELETED when the file is gone.
+KEY identifies the content, a blob hash or a commit: the buffer is built
+once and reused while its KEY holds, so revisits cost no git call and no
+mode start, and its overlays are not emptied onto the first line."
+  (let ((buffer (get-buffer-create (format "*%s: %s*" (if deleted "deleted" rev) path))))
+    (unless (equal (buffer-local-value 'diff-review--blob buffer) key)
+      (let ((contents (diff-review--git "show" (concat rev ":" path)))
+            (root diff-review--root))
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t))
+            (delete-all-overlays)
+            (erase-buffer)
+            (insert contents)
+            (let ((buffer-file-name (expand-file-name path root)))
+              (set-auto-mode))
+            (setq diff-review--deleted deleted
+                  diff-review--blob key)
+            (read-only-mode 1)))))
     buffer))
 
 (defun diff-review--open (i)
@@ -885,8 +892,9 @@ The review buffer must be current."
          (file (diff-review--file i))
          (path (plist-get file :path))
          (buffer (cond ((equal (plist-get file :status) "D")
-                        (diff-review--blob-buffer diff-review--base path t))
-                       (diff-review--head (diff-review--blob-buffer diff-review--head path))
+                        (diff-review--blob-buffer diff-review--base path diff-review--base t))
+                       (diff-review--head
+                        (diff-review--blob-buffer diff-review--head path (plist-get file :hash)))
                        (t (find-file-noselect (expand-file-name path diff-review--root))))))
     (with-current-buffer buffer
       (setq diff-review--review review)
@@ -951,36 +959,39 @@ The review buffer must be current."
       (propertize " " 'display `(left-fringe diff-review-bar ,face))
     ""))
 
-(defun diff-review--fontify (text mode)
-  "TEXT with the syntax faces MODE would give it, or TEXT itself."
+(defun diff-review--fontify (lines mode)
+  "Copies of LINES with the syntax faces MODE gives them, as one text.
+One mode start for all of them: starting a mode is the slow part."
   (condition-case nil
-      (with-temp-buffer
-        (insert text)
-        (delay-mode-hooks (funcall mode))
-        (font-lock-ensure)
-        (buffer-string))
-    (error text)))
+      (if (or (null lines) (eq mode 'fundamental-mode))
+          (mapcar #'copy-sequence lines)   ; copies: the hunks' own strings stay bare
+        (with-temp-buffer
+          (insert (string-join lines "\n"))
+          (delay-mode-hooks (funcall mode))
+          (font-lock-ensure)
+          (split-string (buffer-string) "\n")))
+    (error (mapcar #'copy-sequence lines))))
 
-(defun diff-review--removed-string (lines mode tint)
-  "The inline rendering of removed LINES: fontified as MODE, fringe-marked.
+(defun diff-review--removed-string (lines tint)
+  "The inline rendering of removed LINES, fontified already: fringe-marked.
 TINT, a face or nil, goes over the syntax faces."
   (let ((mark (diff-review--fringe-mark 'diff-indicator-removed)))
-    (mapconcat (lambda (line)
-                 (let ((text (if (eq mode 'fundamental-mode)
-                                 (copy-sequence line)   ; the hunk's own string: keep it bare
-                               (diff-review--fontify line mode))))
-                   (when tint (add-face-text-property 0 (length text) tint t text))
-                   (concat mark text (propertize "\n" 'face tint))))
+    (mapconcat (lambda (text)
+                 (when tint (add-face-text-property 0 (length text) tint t text))
+                 (concat mark text (propertize "\n" 'face tint)))
                lines)))
 
 (defun diff-review--decorate ()
   "Add the inline removed lines, the added tint, the fringe bars and the folds."
   (diff-review--undecorate)
-  (let ((mode major-mode)
-        (inline (diff-review--in-review diff-review--inline-removed))
-        (added (and diff-review-tint-added (diff-review--tint 'diff-review-added 'diff-added)))
-        (removed (and diff-review-tint-removed
-                      (diff-review--tint 'diff-review-removed 'diff-removed))))
+  (let* ((inline (diff-review--in-review diff-review--inline-removed))
+         (added (and diff-review-tint-added (diff-review--tint 'diff-review-added 'diff-added)))
+         (removed (and diff-review-tint-removed
+                       (diff-review--tint 'diff-review-removed 'diff-removed)))
+         (texts (and inline      ; the file's removed lines, fontified together
+                     (diff-review--fontify
+                      (seq-mapcat (lambda (hunk) (plist-get hunk :removed)) diff-review--hunks)
+                      major-mode))))
     (if diff-review--deleted
         (let ((overlay (make-overlay (point-min) (point-max))))
           (overlay-put overlay 'face removed)
@@ -997,8 +1008,10 @@ TINT, a face or nil, goes over the syntax faces."
             (overlay-put overlay 'face added)
             (overlay-put overlay 'line-prefix (diff-review--fringe-mark 'diff-indicator-added)))
           (when (and inline (plist-get hunk :removed))
-            (overlay-put overlay 'before-string
-                         (diff-review--removed-string (plist-get hunk :removed) mode removed)))
+            (let ((n (length (plist-get hunk :removed))))
+              (overlay-put overlay 'before-string
+                           (diff-review--removed-string (seq-take texts n) removed))
+              (setq texts (nthcdr n texts))))
           (push overlay diff-review--overlays)))
       (when diff-review--focus (diff-review--fold)))))
 
