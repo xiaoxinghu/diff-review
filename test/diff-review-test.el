@@ -346,9 +346,14 @@ The repository has two commits and a dirty worktree touching two files."
       (diff-review-next-file)
       (should (equal (buffer-local-value 'header-line-format (window-buffer)) "mine")))))
 
+(defun diff-review-test--removed-lines (overlay)
+  "OVERLAY's inline removed lines, a string, or nil: a bar alone has no newline."
+  (when-let* ((s (overlay-get overlay 'before-string)))
+    (and (string-search "\n" s) s)))
+
 (defun diff-review-test--inline-shown-p ()
   "Whether the selected window's file shows any removed lines inline."
-  (seq-some (lambda (o) (overlay-get o 'before-string))
+  (seq-some #'diff-review-test--removed-lines
             (buffer-local-value 'diff-review--overlays (window-buffer))))
 
 (ert-deftest diff-review-test-inline-toggle-is-per-review ()
@@ -423,8 +428,8 @@ The repository has two commits and a dirty worktree touching two files."
   (with-current-buffer buffer
     (mapcan (lambda (o)
               (cons (overlay-get o 'face)
-                    (when-let* ((s (overlay-get o 'before-string)))
-                      (list (get-text-property 0 'face s)))))
+                    (when-let* ((s (diff-review-test--removed-lines o)))
+                      (list (get-text-property (string-search "\n" s) 'face s)))))
             diff-review--overlays)))
 
 (ert-deftest diff-review-test-tints-switch-off ()
@@ -437,7 +442,7 @@ The repository has two commits and a dirty worktree touching two files."
       (let ((diff-review-tint-added nil) (diff-review-tint-removed nil))
         (with-current-buffer file (diff-review--decorate))
         (should (with-current-buffer file
-                  (seq-some (lambda (o) (overlay-get o 'before-string)) diff-review--overlays)))
+                  (seq-some #'diff-review-test--removed-lines diff-review--overlays)))
         (should-not (seq-some #'identity (diff-review-test--faces file)))))))
 
 (ert-deftest diff-review-test-tint-leaves-the-hunk-bare ()
@@ -461,6 +466,94 @@ The repository has two commits and a dirty worktree touching two files."
     (should (equal (diff-review--glyph "←" "<-") "<-")))
   (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
     (should (equal (diff-review--glyph "←" "<-") "←"))))
+
+;;;; Fringe bars
+
+(defun diff-review-test--file (name)
+  "Walk the selected window's review to file NAME, and return its buffer."
+  (dotimes (_ 5)
+    (unless (string-suffix-p name (or (buffer-file-name (window-buffer)) ""))
+      (diff-review-next-file)))
+  (should (string-suffix-p name (buffer-file-name (window-buffer))))
+  (window-buffer))
+
+(defun diff-review-test--bars (buffer)
+  "The bars BUFFER's review overlays draw, as (LINE . DISPLAY-SPEC), in order."
+  (with-current-buffer buffer
+    (let (bars)
+      (dolist (o diff-review--overlays)
+        (when-let* ((s (overlay-get o 'before-string)))
+          (dotimes (i (length s))
+            (when-let* ((spec (get-text-property i 'display s)))
+              (push (cons (line-number-at-pos (overlay-start o)) spec) bars)))))
+      (sort (nreverse bars) (lambda (a b) (< (car a) (car b)))))))
+
+(ert-deftest diff-review-test-a-bar-on-every-changed-line ()
+  "The removed line's bar comes before the added line it was replaced by."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--open repo "head.json" "HEAD^")
+    (should (equal (diff-review-test--bars (diff-review-test--file "a.txt"))
+                   '((2 left-fringe diff-review-bar diff-indicator-removed)
+                     (2 left-fringe diff-review-bar diff-indicator-added)
+                     (4 left-fringe diff-review-bar diff-indicator-added)
+                     (5 left-fringe diff-review-bar diff-indicator-added))))))
+
+(ert-deftest diff-review-test-bars-in-the-right-fringe ()
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--open repo "head.json" "HEAD^")
+    (let ((file (diff-review-test--file "a.txt"))
+          (diff-review-fringe 'right))
+      (with-current-buffer file (diff-review--decorate))
+      (should (equal (delete-dups (mapcar #'cadr (diff-review-test--bars file)))
+                     '(right-fringe))))))
+
+(ert-deftest diff-review-test-no-bars-keeps-the-hunks ()
+  "Without bars, or without the bitmap of an Emacs built for terminals only,
+the hunks keep their overlays, removed lines and moves."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--open repo "head.json" "HEAD^")
+    (let ((file (diff-review-test--file "a.txt")))
+      (dolist (setup (list (lambda (body) (let ((diff-review-fringe nil)) (funcall body)))
+                           (lambda (body)
+                             (cl-letf (((symbol-function 'fringe-bitmap-p) nil))
+                               (funcall body)))))
+        (funcall setup
+                 (lambda ()
+                   (with-current-buffer file
+                     (diff-review--decorate)
+                     (should-not (diff-review-test--bars file))
+                     (should (seq-some #'diff-review-test--removed-lines diff-review--overlays))
+                     (goto-char (point-min))
+                     (diff-review-next-hunk)
+                     (should (= (line-number-at-pos) 2))
+                     (diff-review-next-hunk)
+                     (should (= (line-number-at-pos) 4)))))))))
+
+(ert-deftest diff-review-test-loads-without-fringes ()
+  "An Emacs built without a window system has no `define-fringe-bitmap'."
+  (cl-letf (((symbol-function 'define-fringe-bitmap) nil))
+    (load (locate-library "diff-review.el") nil t)))
+
+(ert-deftest diff-review-test-org-indent-kept-on-added-lines ()
+  "`org-indent-mode' indents with `line-prefix', which a review overlay's would hide."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--write "n.org" "* a\nx\n")
+    (diff-review-test--git "add" ".")
+    (diff-review-test--git "commit" "-q" "-m" "org")
+    (diff-review-test--write "n.org" "* a\nx\ny\n")
+    (diff-review-test--open repo)
+    (with-current-buffer (diff-review-test--file "n.org")
+      (org-indent-mode 1)
+      (org-indent-add-properties (point-min) (point-max))
+      (let ((y (diff-review--line-pos 3)))
+        (should (diff-review-test--bars (current-buffer)))
+        (should (get-text-property y 'line-prefix))
+        (should (equal (get-char-property y 'line-prefix)
+                       (get-text-property y 'line-prefix)))))))
 
 ;;;; The default base is the user's
 

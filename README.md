@@ -106,8 +106,10 @@ Everything drawn has a face in `M-x customize-group diff-review`, for a
 theme to set. Added and removed lines take the background of `diff-added`
 and `diff-removed` unless `diff-review-added` and `diff-review-removed` set
 their own; `diff-review-tint-added` and `diff-review-tint-removed` turn the
-tint off and leave the fringe bar. On a terminal that cannot draw `←`, `✓`
-or `⋯`, ASCII stands in.
+tint off and leave the fringe bar. The bars go in the left fringe;
+`diff-review-fringe` moves them to the right, or to nowhere with nil. They
+are overlay strings, not `line-prefix`, so `org-indent-mode` keeps its
+indentation. On a terminal that cannot draw `←`, `✓` or `⋯`, ASCII stands in.
 
 The lists leave `hl-line-mode` and the cursor as you have them. For a
 highlighted line and no cursor:
