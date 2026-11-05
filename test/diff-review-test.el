@@ -403,6 +403,58 @@ The repository has two commits and a dirty worktree touching two files."
                       #'diff-review-next-hunk)))
       (customize-set-variable 'diff-review-command-prefix prefix))))
 
+;;;; The prefix once: repeat-mode and next-error
+
+(defun diff-review-test--at-a (repo)
+  "Show a.txt of REPO's review, changed at lines 2 and 4, with point at the top."
+  (diff-review-test--write "a.txt" "a\nX\nc\nD\n")
+  (delete-other-windows)
+  (diff-review-test--open repo)
+  (diff-review--open (seq-position diff-review--files "a.txt"
+                                   (lambda (file path) (equal (plist-get file :path) path))))
+  (goto-char (point-min)))
+
+(defun diff-review-test--at (path line)
+  "Whether the selected window shows the review's PATH with point on LINE."
+  (with-current-buffer (window-buffer)
+    (and (equal (plist-get (diff-review--in-review (diff-review--file)) :path) path)
+         (= (line-number-at-pos) line))))
+
+(ert-deftest diff-review-test-prefix-once-with-repeat-mode ()
+  "With `repeat-mode' on, the prefix starts a run of file keys."
+  (should (eq (get 'diff-review-next-hunk 'repeat-map) 'diff-review-file-command-map))
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (let ((was repeat-mode))
+      (unwind-protect
+          (progn (repeat-mode 1)
+                 (execute-kbd-macro (kbd (concat diff-review-command-prefix " n n"))))
+        (repeat-mode (if was 1 -1))))
+    (should (diff-review-test--at "a.txt" 4))))
+
+(ert-deftest diff-review-test-hunks-answer-to-next-error ()
+  "M-g n and M-g p walk hunks, across files; the review's end restores the function."
+  (diff-review-test--with-repo
+    (let ((b (find-file-noselect (expand-file-name "src/b.txt" repo)))
+          (next-error-last-buffer nil))
+      (with-current-buffer b (setq-local next-error-function #'ignore))
+      (diff-review-test--at-a repo)
+      (execute-kbd-macro (kbd "M-g n"))
+      (should (diff-review-test--at "a.txt" 2))
+      (execute-kbd-macro (kbd "M-g n"))
+      (should (diff-review-test--at "a.txt" 4))
+      (execute-kbd-macro (kbd "M-g p"))
+      (should (diff-review-test--at "a.txt" 2))
+      (execute-kbd-macro (kbd "M-g p"))   ; back into src/b.txt, which comes first
+      (should (diff-review-test--at "src/b.txt" 1))
+      ;; `next-error' last walked from a.txt, which no longer shows.
+      (execute-kbd-macro (kbd "M-g n"))
+      (should (diff-review-test--at "a.txt" 2))
+      (let ((a (window-buffer)))
+        (diff-review-quit)
+        (should (eq (buffer-local-value 'next-error-function b) #'ignore))
+        (should-not (local-variable-p 'next-error-function a))))))
+
 ;;;; Key help follows the user's keys
 
 (defun diff-review-test--header-keys ()

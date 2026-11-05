@@ -69,8 +69,14 @@ keeps its own `C-c` keys:
 | `C-c _ l`   | back to the overview                   |
 | `C-c _ q`   | end the review                         |
 
-Set the prefix with `setopt` or Customize, or `setq` before loading; nil binds no keys at
-all, for binding `diff-review-file-command-map` or the commands yourself.
+`C-c _` is the default because Emacs leaves a package nothing handier: `C-c`
+and a letter, and F5 to F9, are yours, and org takes the rest of `C-c` and
+punctuation. So move it to one of yours, `(setopt diff-review-command-prefix
+"C-c r")` or `"<f6>"`, with Customize, or `setq` before loading; nil binds no
+keys at all, for binding `diff-review-file-command-map` or the commands
+yourself. With `repeat-mode` on, the prefix is typed once: `C-c _ n n v`
+walks two hunks and marks the file viewed. Hunks also answer to `next-error`,
+so `M-g n` and `M-g p` walk them, across files, with no prefix.
 
 The full list is Emacs's own help: `C-c _ C-h` lists the file commands, `C-h m`
 the whole mode, and outside Evil `?` does the same in the overview and the sidebar.
