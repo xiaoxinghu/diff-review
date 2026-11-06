@@ -128,8 +128,10 @@ lines of a file, with replies, resolved or not. `C-c _ c` on a region, or on a
 line, opens a buffer for the body; `C-c C-c` posts it and the thread draws
 under the lines, in the file's comment colour with a tint behind it, a bar
 in the fringe joining it to its lines. The thread point is on, or just
-under, is open; the others are one line each, so a file with many long
-comments still reads, and `C-c _ o` opens them all. The lines need not be
+under, is open, its lines tinted; the others are one line each, so a file
+with many long comments still reads, and `C-c _ o` opens them all. Several
+threads on the same lines open together, and a key that needs one asks
+which. The lines need not be
 changed ones. Threads live in the
 review file, so they persist, and the overview lists them under the tree,
 `RET` going to each. A comment with no location is on the review as a whole.
@@ -188,8 +190,8 @@ in it is rendered as markup.
 ## Look
 
 Everything drawn has a face in `M-x customize-group diff-review`, for a
-theme to set: a thread is `diff-review-comment`, its authors
-`diff-review-comment-author`. Added and removed lines take the background of `diff-added`
+theme to set: a thread is `diff-review-comment`, its lines while it is open
+`diff-review-comment-range`, its authors `diff-review-comment-author`. Added and removed lines take the background of `diff-added`
 and `diff-removed` unless `diff-review-added` and `diff-review-removed` set
 their own; `diff-review-tint-added` and `diff-review-tint-removed` turn the
 tint off and leave the fringe bar. The bars go in the left fringe;

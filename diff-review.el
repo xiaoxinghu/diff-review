@@ -167,6 +167,9 @@ Without a background of its own, the background of `diff-removed' is used.")
   "Face for a comment thread, drawn under the lines it is on.
 A review comment is a comment, so it takes the file's comment colour;
 the background is what says it is not the file's own.")
+(defface diff-review-comment-range '((t :extend t))
+  "Face for the lines of an open comment thread, over the syntax faces.
+Without a background of its own, it takes `diff-review-comment's.")
 (defface diff-review-comment-author '((t :inherit bold))
   "Face for the author of a comment.")
 
@@ -199,7 +202,7 @@ the background is what says it is not the file's own.")
 (defvar-local diff-review--overlays nil "In a file buffer, its review overlays.")
 (defvar-local diff-review--threads nil
   "In a file buffer, its threads as drawn: (COMMENT FIRST LAST STALE OVERLAY).")
-(defvar-local diff-review--current nil "In a file buffer, the id of the thread point is at.")
+(defvar-local diff-review--current nil "In a file buffer, the ids of the threads point is at.")
 (defvar-local diff-review--maps nil
   "In a file buffer, the hunks between blobs: ((OLD . NEW) . HUNKS).")
 (defvar-local diff-review--focus nil "In a file buffer, whether unchanged lines are folded.")
@@ -1441,14 +1444,17 @@ has, so range and thread read as one block.  Bodies fill at the buffer's
 (defun diff-review--thread-open-p (comment)
   "Whether COMMENT's thread draws in full here: all are, or it is point's."
   (or (diff-review--in-review diff-review--threads-open)
-      (equal (gethash "id" comment) diff-review--current)))
+      (member (gethash "id" comment) diff-review--current)))
 
 (defun diff-review--redraw-thread (thread)
-  "Draw THREAD, (COMMENT FIRST LAST STALE OVERLAY), open or closed as it now is."
-  (pcase-let ((`(,comment ,first ,last ,stale ,overlay) thread))
+  "Draw THREAD, (COMMENT FIRST LAST STALE OVERLAY), open or closed as it now is.
+Open, its lines take a tint too; closed, they look as they did."
+  (pcase-let* ((`(,comment ,first ,last ,stale ,overlay) thread)
+               (open (diff-review--thread-open-p comment)))
+    (overlay-put overlay 'face
+                 (and open (diff-review--tint 'diff-review-comment-range 'diff-review-comment)))
     (overlay-put overlay 'after-string
-                 (diff-review--thread-string comment first last stale
-                                             (diff-review--thread-open-p comment)))))
+                 (diff-review--thread-string comment first last stale open))))
 
 (defun diff-review--decorate-comments ()
   "Draw this file's threads: each under the last line of its range.
@@ -1466,6 +1472,8 @@ no tint: the code keeps the look it had."
                                             (diff-review--line-pos (1+ last)) nil t nil))
                      (thread (list comment first last stale overlay)))
           (overlay-put overlay 'diff-review-comment comment)
+          (overlay-put overlay 'priority 1)      ; the open tint over the added one
+          (overlay-put overlay 'evaporate t)     ; lines deleted under it: no stray thread
           (diff-review--keep overlay)
           (diff-review--bars (diff-review--line-pos first) (1+ (- last first))
                              (diff-review--fringe-mark 'diff-review-comment))
@@ -1474,26 +1482,33 @@ no tint: the code keeps the look it had."
     (diff-review--track-thread)))
 
 (defun diff-review--track-thread ()
-  "Open the thread point is at and close the one it left.
+  "Open the threads point is at and close the ones it left.
 On `post-command-hook' in a file under review."
   (when diff-review--threads
-    (let* ((comment (diff-review--thread-at-point))
-           (id (and comment (gethash "id" comment))))
-      (unless (equal id diff-review--current)
+    (let ((ids (mapcar (lambda (c) (gethash "id" c)) (diff-review--threads-at-point))))
+      (unless (seq-set-equal-p ids diff-review--current)
         (let ((was diff-review--current))
-          (setq diff-review--current id)
+          (setq diff-review--current ids)
           (dolist (thread diff-review--threads)
-            (when (member (gethash "id" (car thread)) (list was id))
+            (when (member (gethash "id" (car thread)) (append was ids))
               (diff-review--redraw-thread thread))))))))
 
-(defun diff-review--thread-at-point ()
-  "The comment at point: its lines, or the line just under its thread; else nil."
+(defun diff-review--threads-at-point ()
+  "The comments at point: on their lines, or the line just under their threads.
+Nearest first, by the start of their lines."
   (let ((bol (line-beginning-position)))
-    (or (seq-some (lambda (o) (overlay-get o 'diff-review-comment)) (overlays-at (point) t))
-        (and (> bol (point-min))
-             (seq-some (lambda (o) (and (= (overlay-end o) bol)
-                                        (overlay-get o 'diff-review-comment)))
-                       (overlays-in (1- bol) bol))))))
+    (mapcar (lambda (o) (overlay-get o 'diff-review-comment))
+            (sort (seq-filter
+                   (lambda (o) (overlay-get o 'diff-review-comment))
+                   (append (overlays-at (point))
+                           (and (> bol (point-min))
+                                (seq-filter (lambda (o) (= (overlay-end o) bol))
+                                            (overlays-in (1- bol) bol)))))
+                  (lambda (a b) (> (overlay-start a) (overlay-start b)))))))
+
+(defun diff-review--thread-at-point ()
+  "The comment at point, the nearest when there are several, or nil."
+  (car (diff-review--threads-at-point)))
 
 (defun diff-review--goto-line (line)
   "Move to LINE, near the top of the window, opening the thread there."
@@ -1542,8 +1557,17 @@ A region ending at the start of a line stops before it."
     body))
 
 (defun diff-review--thread-here ()
-  "The comment at point, or an error."
-  (or (diff-review--thread-at-point) (user-error "No comment on this line")))
+  "The comment at point, asked for when there are several; else an error."
+  (let ((comments (diff-review--threads-at-point)))
+    (cond ((null comments) (user-error "No comment on this line"))
+          ((null (cdr comments)) (car comments))
+          (t (let* ((names (mapcar (lambda (c)
+                                     (cons (format "%s: %s" (gethash "author" c)
+                                                   (car (split-string (or (gethash "body" c) "") "\n")))
+                                           c))
+                                   comments))
+                    (pick (completing-read "Which thread: " (mapcar #'car names) nil t)))
+               (cdr (assoc pick names)))))))
 
 (defun diff-review-comment ()
   "Comment on the region's lines, or the line at point."

@@ -869,6 +869,31 @@ the hunks keep their overlays, removed lines and moves."
       (diff-review-toggle-threads)
       (should (string-match-p "second line" (funcall text))))))
 
+(ert-deftest diff-review-test-threads-on-the-same-lines-open-together ()
+  "Two threads on one line both open at point, tint their lines, and r asks which."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (diff-review--in-review
+      (diff-review--add-comment "a.txt" '(2 . 2) nil "one")
+      (diff-review--add-comment "a.txt" '(2 . 3) nil "two"))
+    (let ((threads (lambda ()
+                     (seq-filter (lambda (o) (overlay-get o 'diff-review-comment))
+                                 (overlays-in (point-min) (point-max))))))
+      (goto-char (point-min)) (diff-review--track-thread)
+      (should (seq-every-p (lambda (o) (null (overlay-get o 'face))) (funcall threads)))
+      (forward-line 1) (diff-review--track-thread)
+      (should (= 2 (length diff-review--current)))
+      (should (seq-every-p (lambda (o) (and (overlay-get o 'face)
+                                            (string-match-p "reply" (overlay-get o 'after-string))))
+                           (funcall threads)))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt names &rest _) (seq-find (lambda (n) (string-suffix-p "two" n)) names)))
+                ((symbol-function 'read-string-from-buffer) (lambda (_p _s) "ok")))
+        (diff-review-reply))
+      (let ((c (seq-find (lambda (c) (equal (gethash "body" c) "two"))
+                         (diff-review--in-review diff-review--comments))))
+        (should (= 1 (length (gethash "replies" c))))))))
+
 (ert-deftest diff-review-test-thread-follows-its-lines ()
   "A thread written against an older blob maps its lines; one inside a change is outdated."
   (diff-review-test--with-repo
