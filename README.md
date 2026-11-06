@@ -70,6 +70,12 @@ keeps its own `C-c` keys:
 | `C-c _ t`   | show or hide the sidebar               |
 | `C-c _ l`   | back to the overview                   |
 | `C-c _ q`   | end the review                         |
+| `C-c _ c`   | comment on the region's lines, or the line at point |
+| `C-c _ r`   | reply to the thread at point           |
+| `C-c _ x`   | resolve the thread at point, or reopen it |
+| `C-c _ D`   | delete the thread at point             |
+| `C-c _ o`   | open every thread, or only the one at point again |
+| `C-c _ N` `C-c _ P` | next, previous thread, across files |
 
 `C-c _` is the default because Emacs leaves a package nothing handier: `C-c`
 and a letter, and F5 to F9, are yours, and org takes the rest of `C-c` and
@@ -115,10 +121,78 @@ The buffer's header line comes back when the review ends. Hiding the removed
 lines lasts for that review; `diff-review-inline-removed` is where each review
 starts.
 
+## Comments
+
+A review takes comments the way a pull request page does: a thread on some
+lines of a file, with replies, resolved or not. `C-c _ c` on a region, or on a
+line, opens a buffer for the body; `C-c C-c` posts it and the thread draws
+under the lines, in the file's comment colour with a tint behind it, a bar
+in the fringe joining it to its lines. The thread point is on, or just
+under, is open, its lines tinted; the others are one line each, so a file
+with many long comments still reads, and `C-c _ o` opens them all. Several
+threads on the same lines open together, and a key that needs one asks
+which. The lines need not be
+changed ones. Threads live in the
+review file, so they persist, and the overview lists them under the tree,
+`RET` going to each. A comment with no location is on the review as a whole.
+
+```json
+{"format": "diff-review/1",
+ "base": "main",
+ "viewed": {},
+ "comments": [
+   {"id": "k3f9a1",
+    "path": "src/a.ts",
+    "lines": [12, 15],
+    "blob": "<blob hash of src/a.ts when this was written>",
+    "author": "xiaoxing",
+    "at": "2026-11-06T12:40:11+13:00",
+    "body": "This retries forever when the socket is gone.",
+    "replies": [
+      {"author": "claude", "at": "2026-11-06T12:58:02+13:00", "body": "Capped at 5 in 3b1c0e2."}],
+    "resolved": true},
+   {"id": "77c02d", "author": "review", "at": "2026-11-06T13:01:40+13:00",
+    "body": "Overall: correct, one nit above."}]}
+```
+
+The file is for agents as much as for Emacs, so it is plain: one array, one
+object per thread, the first message carrying the location and `replies` a
+flat list of `{author, at, body}`. `id` is any string unique among the
+comments. `lines` is first and last, inclusive, counted in the file content
+`blob` names, so a thread follows its lines when the file changes, through
+`git diff` of the two blobs, and says `outdated` when a change landed inside
+them. Without `blob` the lines count in the file as it is now; Emacs always
+writes it. `path` is relative to the root and may name a file outside the
+diff: that file joins the review's tree as unchanged, so its threads are
+reached like any other.
+Keys Emacs does not know are kept as they are, in a comment too, which is
+where an agent puts a severity or a confidence.
+
+To write a comment as an agent: the blob is `git hash-object -w <path>` in a
+worktree review, `git rev-parse <head>:<path>` for a range of commits; append
+one object. The `-w` stores the blob, which a worktree file's is not until it
+is committed, so git can diff it once the file moves on; without it the thread
+reads as outdated the moment the file changes. To reply, push to the thread's `replies`; to mark it fixed, add
+`"resolved": true`. Emacs rereads the file before each of its own writes and
+whenever it changes on disk, so writing beside an open review loses nothing.
+With `jq`:
+
+```sh
+jq --arg blob "$(git hash-object -w src/a.ts)" --arg at "$(date -Iseconds)" \
+  '.comments += [{id: "a1b2c3", path: "src/a.ts", lines: [12, 15], blob: $blob,
+                  author: "claude", at: $at, body: "Retries forever.", replies: []}]' \
+  review.json > review.json.new && mv review.json.new review.json
+```
+
+The author is `diff-review-author`, by default the repository's `user.name`.
+The time is RFC 3339 with the local offset. The body is plain text; nothing
+in it is rendered as markup.
+
 ## Look
 
 Everything drawn has a face in `M-x customize-group diff-review`, for a
-theme to set. Added and removed lines take the background of `diff-added`
+theme to set: a thread is `diff-review-comment`, its lines while it is open
+`diff-review-comment-range`, its authors `diff-review-comment-author`. Added and removed lines take the background of `diff-added`
 and `diff-removed` unless `diff-review-added` and `diff-review-removed` set
 their own; `diff-review-tint-added` and `diff-review-tint-removed` turn the
 tint off and leave the fringe bar. The bars go in the left fringe;
