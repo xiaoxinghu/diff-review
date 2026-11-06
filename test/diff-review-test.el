@@ -836,7 +836,7 @@ the hunks keep their overlays, removed lines and moves."
                        (diff-review--in-review (plist-get (diff-review--file) :hash))))
         (should (equal (gethash "body" c) "Why?"))
         (should (and (gethash "id" c) (gethash "author" c) (gethash "at" c))))
-      (goto-char (point-min)) (forward-line 2)   ; line 3, inside the thread
+      (goto-char (point-min)) (forward-line 3)   ; line 4, just under the thread
       (diff-review-reply)
       (diff-review-toggle-resolved)
       (let ((c (aref (gethash "comments" (diff-review-test--review-json repo)) 0)))
@@ -850,6 +850,25 @@ the hunks keep their overlays, removed lines and moves."
       (should (null diff-review--threads))
       (should (equal (gethash "comments" (diff-review-test--review-json repo)) [])))))
 
+(ert-deftest diff-review-test-only-the-thread-at-point-is-open ()
+  "A thread draws open while point is on its lines or just under, else as one line."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (diff-review--in-review
+      (diff-review--add-comment "a.txt" '(2 . 2) nil "first line\nsecond line"))
+    (let ((text (lambda () (overlay-get (diff-review-test--thread-overlay) 'after-string))))
+      (goto-char (point-min)) (diff-review--track-thread)
+      (should-not (string-match-p "second line" (funcall text)))
+      (forward-line 1) (diff-review--track-thread)
+      (should (string-match-p "second line" (funcall text)))
+      (should (string-match-p "line 2" (funcall text)))
+      (forward-line 1) (diff-review--track-thread)   ; line 3, under the thread
+      (should (string-match-p "second line" (funcall text)))
+      (forward-line 1) (diff-review--track-thread)
+      (should-not (string-match-p "second line" (funcall text)))
+      (diff-review-toggle-threads)
+      (should (string-match-p "second line" (funcall text))))))
+
 (ert-deftest diff-review-test-thread-follows-its-lines ()
   "A thread written against an older blob maps its lines; one inside a change is outdated."
   (diff-review-test--with-repo
@@ -860,7 +879,7 @@ the hunks keep their overlays, removed lines and moves."
         (diff-review--add-comment "a.txt" '(2 . 2) old "on B")
         (diff-review--add-comment "a.txt" '(4 . 4) old "on d")
         (diff-review--add-comment "a.txt" '(5 . 5) nil "no blob")))
-    (should (equal (sort (mapcar (lambda (th) (cons (gethash "body" (car th)) (cdr th)))
+    (should (equal (sort (mapcar (lambda (th) (cons (gethash "body" (car th)) (seq-take (cdr th) 3)))
                                  diff-review--threads)
                          (lambda (a b) (string< (car a) (car b))))
                    '(("no blob" 5 5 nil) ("on B" 3 3 nil) ("on d" 4 4 t))))))
@@ -875,7 +894,7 @@ the hunks keep their overlays, removed lines and moves."
              "\"at\": \"2026-11-06T10:00:00+13:00\", \"body\": \"hm\", \"severity\": \"nit\", "
              "\"resolved\": false}]}"))
     (diff-review-test--at-a repo)
-    (should (equal (mapcar #'cdr diff-review--threads) '((4 4 nil))))
+    (should (equal (mapcar (lambda (th) (seq-take (cdr th) 3)) diff-review--threads) '((4 4 nil))))
     (diff-review--in-review (diff-review--set-viewed (diff-review--file) t))   ; a write
     (let ((text (with-temp-buffer
                   (insert-file-contents (expand-file-name "review.json" repo))

@@ -163,10 +163,10 @@ Without a background of its own, the background of `diff-removed' is used.")
   "Face for the status letter of a modified, renamed or copied file.")
 (defface diff-review-unchanged '((t :inherit shadow))
   "Face for the line that stands for folded unchanged lines.")
-(defface diff-review-comment '((t :inherit highlight :extend t))
-  "Face for a comment thread, drawn under the lines it is on.")
-(defface diff-review-comment-range '((t :inherit secondary-selection :extend t))
-  "Face for the lines a comment thread is on, over the syntax faces.")
+(defface diff-review-comment '((t :inherit (font-lock-comment-face highlight) :extend t))
+  "Face for a comment thread, drawn under the lines it is on.
+A review comment is a comment, so it takes the file's comment colour;
+the background is what says it is not the file's own.")
 (defface diff-review-comment-author '((t :inherit bold))
   "Face for the author of a comment.")
 
@@ -190,6 +190,7 @@ Without a background of its own, the background of `diff-removed' is used.")
 (defvar-local diff-review--sidebar-enabled nil "Whether this review shows its sidebar.")
 (defvar-local diff-review--sidebar-width nil "The width of this review's sidebar, in columns.")
 (defvar-local diff-review--inline-removed nil "Whether this review shows removed lines inline.")
+(defvar-local diff-review--threads-open nil "Whether this review draws every thread open.")
 
 ;; In a file buffer or the sidebar.
 (defvar-local diff-review--review nil "The review buffer this buffer belongs to.")
@@ -197,7 +198,8 @@ Without a background of its own, the background of `diff-removed' is used.")
   "In a file buffer, its hunks: plists with :line, :count and :removed.")
 (defvar-local diff-review--overlays nil "In a file buffer, its review overlays.")
 (defvar-local diff-review--threads nil
-  "In a file buffer, its comment threads as drawn: (COMMENT FIRST LAST STALE).")
+  "In a file buffer, its threads as drawn: (COMMENT FIRST LAST STALE OVERLAY).")
+(defvar-local diff-review--current nil "In a file buffer, the id of the thread point is at.")
 (defvar-local diff-review--maps nil
   "In a file buffer, the hunks between blobs: ((OLD . NEW) . HUNKS).")
 (defvar-local diff-review--focus nil "In a file buffer, whether unchanged lines are folded.")
@@ -1310,7 +1312,7 @@ TINT, a face or nil, goes over the syntax faces."
                                (max 0 (1- (plist-get hunk :count)))
                                diff-review-context)))
             keep))
-    (pcase-dolist (`(,_ ,first ,end ,_) diff-review--threads)   ; a thread stays in view
+    (pcase-dolist (`(,_ ,first ,end . ,_) diff-review--threads)   ; a thread stays in view
       (push (cons (max 1 (- first diff-review-context)) (min last (+ end diff-review-context)))
             keep))
     (setq keep (sort keep (lambda (a b) (< (car a) (car b)))))
@@ -1385,36 +1387,75 @@ then they draw where they were.  Lines past the end draw at the end."
       (fill-region (point-min) (point-max)))
     (split-string (buffer-string) "\n")))
 
-(defun diff-review--thread-string (comment stale)
-  "COMMENT as the text drawn under its lines; STALE adds the outdated mark.
-Bodies are filled at the buffer's `fill-column', less the margin."
-  (let* ((bar (diff-review--glyph "│" "|"))
+(defun diff-review--thread-string (comment first last stale open)
+  "COMMENT drawn under its lines FIRST to LAST: in full when OPEN, else one line.
+STALE adds the outdated mark.  Every row carries the fringe bar the range
+has, so range and thread read as one block.  Bodies fill at the buffer's
+`fill-column', less the margin."
+  (let* ((bubble (diff-review--glyph "💬" "#"))
+         (bar (diff-review--fringe-mark 'diff-review-comment))
          (width (max 20 (- fill-column 4)))
          (who (lambda (m)
                 (concat (propertize (or (gethash "author" m) "?") 'face 'diff-review-comment-author)
                         "  " (propertize (diff-review--when (gethash "at" m)) 'face 'shadow))))
-         (lines (list (concat (diff-review--glyph "┌" "+") " " (funcall who comment)
-                              (if (gethash "resolved" comment)
-                                  (propertize (concat "  " (diff-review--glyph "✓" "*") " resolved")
-                                              'face 'success)
-                                "")
-                              (if stale (propertize "  outdated" 'face 'warning) "")))))
-    (dolist (line (diff-review--body-lines (gethash "body" comment) width))
-      (push (concat bar " " line) lines))
-    (seq-doseq (reply (or (gethash "replies" comment) []))
-      (push (concat bar "   " (funcall who reply)) lines)
-      (dolist (line (diff-review--body-lines (gethash "body" reply) width))
-        (push (concat bar "   " line) lines)))
-    (push (diff-review--glyph "└" "+") lines)
-    (let ((text (concat (string-join (nreverse lines) "\n") "\n")))
+         (marks (concat (if (gethash "resolved" comment)
+                            (propertize (concat "  " (diff-review--glyph "✓" "*") " resolved")
+                                        'face 'success)
+                          "")
+                        (if stale (propertize "  outdated" 'face 'warning) "")))
+         (replies (or (gethash "replies" comment) []))
+         lines)
+    (if open
+        (progn
+          (push (concat bubble " " (funcall who comment) "  "
+                        (propertize (if (= first last) (format "line %d" first)
+                                      (format "lines %d-%d" first last))
+                                    'face 'shadow)
+                        marks)
+                lines)
+          (dolist (line (diff-review--body-lines (gethash "body" comment) width))
+            (push (concat "  " line) lines))
+          (seq-doseq (reply replies)
+            (push (concat "  " (funcall who reply)) lines)
+            (dolist (line (diff-review--body-lines (gethash "body" reply) width))
+              (push (concat "    " line) lines)))
+          (when diff-review-file-header-keys
+            (push (concat "  " (diff-review--key-hints
+                                '((diff-review-reply . "reply")
+                                  (diff-review-toggle-resolved . "resolve")
+                                  (diff-review-delete-comment . "delete"))))
+                  lines)))
+      (push (concat bubble " " (funcall who comment) "  "
+                    (truncate-string-to-width
+                     (car (split-string (or (gethash "body" comment) "") "\n"))
+                     width nil nil (diff-review--glyph "…" "..."))
+                    (if (zerop (length replies)) ""
+                      (propertize (format "  +%d" (length replies)) 'face 'shadow))
+                    marks)
+            lines))
+    (let ((text (concat (mapconcat (lambda (line) (concat bar line)) (nreverse lines) "\n")
+                        "\n")))
       (add-face-text-property 0 (length text) 'diff-review-comment t text)
       text)))
+
+(defun diff-review--thread-open-p (comment)
+  "Whether COMMENT's thread draws in full here: all are, or it is point's."
+  (or (diff-review--in-review diff-review--threads-open)
+      (equal (gethash "id" comment) diff-review--current)))
+
+(defun diff-review--redraw-thread (thread)
+  "Draw THREAD, (COMMENT FIRST LAST STALE OVERLAY), open or closed as it now is."
+  (pcase-let ((`(,comment ,first ,last ,stale ,overlay) thread))
+    (overlay-put overlay 'after-string
+                 (diff-review--thread-string comment first last stale
+                                             (diff-review--thread-open-p comment)))))
 
 (defun diff-review--decorate-comments ()
   "Draw this file's threads: each under the last line of its range.
 The thread goes in the range's own overlay as its after-string, which
 Emacs shows before a before-string at the same place, so the next hunk's
-inline removed lines stay below it."
+inline removed lines stay below it.  The range itself gets a fringe bar,
+no tint: the code keeps the look it had."
   (let* ((path (diff-review--in-review (plist-get (diff-review--file) :path)))
          (comments (diff-review--in-review (diff-review--file-comments path)))
          (blob (and comments (diff-review--buffer-blob))))
@@ -1422,22 +1463,43 @@ inline removed lines stay below it."
       (when (diff-review--comment-lines comment)
         (pcase-let* ((`(,first ,last ,stale) (diff-review--thread-lines comment blob))
                      (overlay (make-overlay (diff-review--line-pos first)
-                                            (diff-review--line-pos (1+ last)) nil t nil)))
-          (overlay-put overlay 'face 'diff-review-comment-range)
-          (overlay-put overlay 'priority 1)   ; over the added tint
-          (overlay-put overlay 'after-string (diff-review--thread-string comment stale))
+                                            (diff-review--line-pos (1+ last)) nil t nil))
+                     (thread (list comment first last stale overlay)))
           (overlay-put overlay 'diff-review-comment comment)
           (diff-review--keep overlay)
-          (push (list comment first last stale) diff-review--threads))))))
+          (diff-review--bars (diff-review--line-pos first) (1+ (- last first))
+                             (diff-review--fringe-mark 'diff-review-comment))
+          (push thread diff-review--threads)
+          (diff-review--redraw-thread thread))))
+    (diff-review--track-thread)))
+
+(defun diff-review--track-thread ()
+  "Open the thread point is at and close the one it left.
+On `post-command-hook' in a file under review."
+  (when diff-review--threads
+    (let* ((comment (diff-review--thread-at-point))
+           (id (and comment (gethash "id" comment))))
+      (unless (equal id diff-review--current)
+        (let ((was diff-review--current))
+          (setq diff-review--current id)
+          (dolist (thread diff-review--threads)
+            (when (member (gethash "id" (car thread)) (list was id))
+              (diff-review--redraw-thread thread))))))))
 
 (defun diff-review--thread-at-point ()
-  "The comment whose lines point is on, or nil."
-  (seq-some (lambda (o) (overlay-get o 'diff-review-comment)) (overlays-at (point) t)))
+  "The comment at point: its lines, or the line just under its thread; else nil."
+  (let ((bol (line-beginning-position)))
+    (or (seq-some (lambda (o) (overlay-get o 'diff-review-comment)) (overlays-at (point) t))
+        (and (> bol (point-min))
+             (seq-some (lambda (o) (and (= (overlay-end o) bol)
+                                        (overlay-get o 'diff-review-comment)))
+                       (overlays-in (1- bol) bol))))))
 
 (defun diff-review--goto-line (line)
-  "Move to LINE, near the top of the window."
+  "Move to LINE, near the top of the window, opening the thread there."
   (goto-char (diff-review--line-pos line))
-  (recenter diff-review-hunk-recenter))
+  (recenter diff-review-hunk-recenter)
+  (diff-review--track-thread))
 
 (defun diff-review--goto-thread (comment)
   "Move to where COMMENT is drawn in this buffer."
@@ -1524,6 +1586,17 @@ The table at point may be stale once someone else's write is taken."
   (diff-review--change-comment
    (gethash "id" (diff-review--thread-here))
    (lambda (c) (if (gethash "resolved" c) (remhash "resolved" c) (puthash "resolved" t c)))))
+
+(defun diff-review-toggle-threads ()
+  "Draw every thread of the review open, or only the one at point again."
+  (interactive)
+  (let ((review (diff-review--in-review
+                  (setq diff-review--threads-open (not diff-review--threads-open))
+                  (current-buffer))))
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (and diff-review-file-mode (eq diff-review--review review))
+          (mapc #'diff-review--redraw-thread diff-review--threads))))))
 
 (defun diff-review-delete-comment ()
   "Delete the comment thread at point, replies included."
@@ -1732,6 +1805,7 @@ RESET starts from the first hunk of the file."
   "r" #'diff-review-reply
   "x" #'diff-review-toggle-resolved
   "D" #'diff-review-delete-comment
+  "o" #'diff-review-toggle-threads
   "N" #'diff-review-next-comment
   "P" #'diff-review-previous-comment
   "t" #'diff-review-toggle-sidebar
@@ -1767,7 +1841,8 @@ moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
 \\[diff-review-quit] ends the review.
 \\[diff-review-comment] comments on the region or the line, \\[diff-review-reply] replies to the
 thread at point, \\[diff-review-toggle-resolved] resolves it, \\[diff-review-delete-comment] deletes it,
-and \\[diff-review-next-comment] and \\[diff-review-previous-comment] walk the threads, across files.
+\\[diff-review-next-comment] and \\[diff-review-previous-comment] walk the threads, across files,
+and \\[diff-review-toggle-threads] opens them all, or only the one at point again.
 \\<global-map>\\[next-error] and \\[previous-error] walk the hunks too.  With `repeat-mode'
 the prefix is needed once, for a run of these keys.
 
@@ -1780,6 +1855,7 @@ the prefix is needed once, for a run of these keys.
                   (list (list :line 1 :count 0 :removed nil))
                 (diff-review--in-review (diff-review--parse-hunks (diff-review--file)))))
         (diff-review--decorate)
+        (add-hook 'post-command-hook #'diff-review--track-thread nil t)
         (diff-review--set 'next-error-function #'diff-review--next-error)
         (when diff-review-file-header
           (diff-review--set 'header-line-format
@@ -1787,6 +1863,7 @@ the prefix is needed once, for a run of these keys.
                                                    diff-review-file-header
                                                  #'diff-review--file-header))))))
     (diff-review--undecorate)
+    (remove-hook 'post-command-hook #'diff-review--track-thread t)
     (pcase-dolist (`(,var ,local . ,value) diff-review--saved)
       (if local (set var value) (kill-local-variable var)))
     (kill-local-variable 'diff-review--saved)
