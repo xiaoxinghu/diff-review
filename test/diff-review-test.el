@@ -895,7 +895,7 @@ the hunks keep their overlays, removed lines and moves."
                                             (string-match-p "reply" (overlay-get o 'after-string))))
                            (funcall threads)))
       (cl-letf (((symbol-function 'completing-read)
-                 (lambda (_prompt names &rest _) (seq-find (lambda (n) (string-suffix-p "two" n)) names)))
+                 (lambda (_prompt names &rest _) (seq-find (lambda (n) (string-search ": two" n)) names)))
                 ((symbol-function 'read-string-from-buffer) (lambda (_p _s) "ok")))
         (diff-review-reply))
       (let ((c (seq-find (lambda (c) (equal (gethash "body" c) "two"))
@@ -969,6 +969,36 @@ Redrawing after a write keeps each file's threads in that file."
                    [3 3]))
     (should (equal (mapcar #'cdr (diff-review-test--threads)) '((3 3 nil))))
     (widen)))
+
+(ert-deftest diff-review-test-threads-that-read-alike-stay-apart ()
+  "Two threads at point with the same author and opening line are offered apart."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (let (second offered)
+      (diff-review--in-review
+        (diff-review--add-comment "a.txt" '(2 . 2) nil "same\nfirst")
+        (setq second (diff-review--add-comment "a.txt" '(2 . 2) nil "same\nsecond")))
+      (goto-char (point-min)) (forward-line 1)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt names &rest _)
+                   (setq offered names)
+                   (seq-find (lambda (n) (string-search (gethash "id" second) n)) names)))
+                ((symbol-function 'read-string-from-buffer) (lambda (_p _s) "to the second")))
+        (diff-review-reply))
+      (should (= 2 (length (seq-uniq offered))))
+      (let ((c (diff-review--in-review (diff-review--comment (gethash "id" second)))))
+        (should (= 1 (length (gethash "replies" c))))))))
+
+(ert-deftest diff-review-test-thread-under-an-unterminated-last-line ()
+  "A thread on the last line of a file with no final newline draws under it."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo "a\nX\nc\nD")
+    (diff-review--in-review (diff-review--add-comment "a.txt" '(4 . 4) nil "last"))
+    (should (string-prefix-p "\n" (overlay-get (diff-review-test--thread-overlay) 'after-string)))
+    (goto-char (point-min))
+    (diff-review--in-review (diff-review--add-comment "a.txt" '(1 . 1) nil "first"))
+    (should-not (string-prefix-p "\n" (overlay-get (car (diff-review--thread-overlays))
+                                                   'after-string)))))
 
 (ert-deftest diff-review-test-thread-follows-its-lines ()
   "A thread written against an older blob maps its lines; one inside a change is outdated."

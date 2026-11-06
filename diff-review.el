@@ -1486,15 +1486,20 @@ margin; the keys are hinted where they are bound, in a file."
         (line-number-at-pos (max (overlay-start overlay) (1- (overlay-end overlay))) t)))
 
 (defun diff-review--redraw-thread (overlay open)
-  "Draw thread OVERLAY: in full when OPEN, its lines tinted; else as one line."
-  (pcase-let ((`(,first . ,last) (diff-review--thread-span overlay)))
+  "Draw thread OVERLAY: in full when OPEN, its lines tinted; else as one line.
+A file whose last line has no newline gets one drawn, so the thread
+still hangs under that line."
+  (pcase-let ((`(,first . ,last) (diff-review--thread-span overlay))
+              (ends-a-line (save-excursion (goto-char (overlay-end overlay)) (bolp))))
     (overlay-put overlay 'diff-review-open open)
     (overlay-put overlay 'face
                  (and open (diff-review--tint 'diff-review-comment-range 'diff-review-comment)))
     (overlay-put overlay 'after-string
-                 (diff-review--thread-string (overlay-get overlay 'diff-review-comment)
-                                             first last (overlay-get overlay 'diff-review-stale)
-                                             open))))
+                 (concat (if ends-a-line "" "\n")
+                         (diff-review--thread-string (overlay-get overlay 'diff-review-comment)
+                                                     first last
+                                                     (overlay-get overlay 'diff-review-stale)
+                                                     open)))))
 
 (defun diff-review--decorate-comments ()
   "Draw this file's threads, each under the last line of its range.
@@ -1579,9 +1584,9 @@ A region ending at the start of a line stops before it."
                           (diff-review--threads-at-point))))
     (cond ((null comments) (user-error "No comment on this line"))
           ((null (cdr comments)) (car comments))
-          (t (let* ((names (mapcar (lambda (c)
-                                     (cons (format "%s: %s" (gethash "author" c)
-                                                   (diff-review--first-line c))
+          (t (let* ((names (mapcar (lambda (c)   ; the id: two may read the same
+                                     (cons (format "%s: %s  [%s]" (gethash "author" c)
+                                                   (diff-review--first-line c) (gethash "id" c))
                                            c))
                                    comments))
                     (pick (completing-read "Which thread: " (mapcar #'car names) nil t)))
