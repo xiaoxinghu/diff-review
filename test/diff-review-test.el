@@ -1002,8 +1002,14 @@ Redrawing after a write keeps each file's threads in that file."
         (goto-char (point-min))
         (search-forward "  notes.md:2  ")
         (diff-review-open-at-point))
-      (should (string-suffix-p "notes.md" (buffer-file-name (window-buffer))))
-      (should (= 2 (with-current-buffer (window-buffer) (line-number-at-pos)))))))
+      (should (diff-review-test--at "notes.md" 2))   ; in the review, unchanged
+      (with-current-buffer (window-buffer)
+        (should diff-review-file-mode)
+        (should (null diff-review--hunks))
+        (should (equal (mapcar #'cdr (diff-review-test--threads)) '((2 2 nil)))))
+      (with-current-buffer review
+        (should (string-match-p "2 files changed" (buffer-string)))
+        (should (string-match-p "^  notes.md" (buffer-string)))))))
 
 (ert-deftest diff-review-test-walk-the-threads ()
   "N and P walk the threads, across files; src/b.txt comes first, directories first."

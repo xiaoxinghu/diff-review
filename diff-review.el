@@ -333,19 +333,26 @@ Return a hash table of path to (ADDED . REMOVED)."
           (error (user-error "No merge base with base %S: set \"base\" in the review \
 file, or `diff-review-default-base' for new reviews (%s)"
                              diff-review--base-name (error-message-string err)))))
-  (let* ((entries (sort (diff-review--parse-name-status
-                         (apply #'diff-review--git "diff" "--name-status" "-M" "-z"
-                                (diff-review--range)))
+  (let* ((shown (and diff-review--index   ; keeps its place by path: the index may move
+                     (< diff-review--index (length diff-review--files))
+                     (plist-get (diff-review--file) :path)))
+         (changed (diff-review--parse-name-status
+                   (apply #'diff-review--git "diff" "--name-status" "-M" "-z"
+                          (diff-review--range))))
+         ;; A commented file the diff has not is in the review too, unchanged.
+         (commented (diff-review--commented-paths (mapcar #'car changed)))
+         (entries (sort (append changed (mapcar (lambda (e) (list (car e) " " nil)) commented))
                         (lambda (a b) (diff-review--tree-less-p (car a) (car b)))))
          (numstat (diff-review--parse-numstat
                    (apply #'diff-review--git "diff" "--numstat" "-M" "-z"
                           (diff-review--range))))
-         (deleted (mapcar #'car (seq-filter (lambda (e) (equal (nth 1 e) "D")) entries)))
-         (present (mapcar #'car (seq-remove (lambda (e) (equal (nth 1 e) "D")) entries)))
+         (deleted (mapcar #'car (seq-filter (lambda (e) (equal (nth 1 e) "D")) changed)))
+         (present (mapcar #'car (seq-remove (lambda (e) (equal (nth 1 e) "D")) changed)))
          ;; A deleted file's blob is its base one: every file has the blob it shows.
          (hashes (append (cl-mapcar #'cons present (diff-review--hashes present))
                          (cl-mapcar #'cons deleted
-                                    (diff-review--hashes deleted diff-review--base)))))
+                                    (diff-review--hashes deleted diff-review--base))
+                         commented)))
     (setq diff-review--files
           (vconcat
            (mapcar (lambda (entry)
@@ -354,7 +361,20 @@ file, or `diff-review-default-base' for new reviews (%s)"
                          (list :path path :status status :old old
                                :added (or (car stat) 0) :removed (or (cdr stat) 0)
                                :hash (cdr (assoc path hashes))))))
-                   entries)))))
+                   entries)))
+    (setq diff-review--index (and shown (diff-review--file-index shown)))))
+
+(defun diff-review--commented-paths (listed)
+  "The commented paths not among LISTED that the head, or the worktree, has.
+As (PATH . HASH); a path git has not is left to the overview's list."
+  (delq nil
+        (mapcar (lambda (path)
+                  (and (not (member path listed))
+                       (when-let* ((hash (ignore-errors
+                                           (car (diff-review--hashes (list path))))))
+                         (cons path hash))))
+                (seq-uniq (delq nil (mapcar (lambda (c) (gethash "path" c))
+                                            diff-review--comments))))))
 
 (defun diff-review--file (&optional index)
   "The file plist at INDEX, by default the one shown, or nil."
@@ -480,6 +500,10 @@ appending beside Emacs loses nothing.  The review buffer must be current."
   (funcall fn)
   (puthash "comments" diff-review--comments diff-review--data)
   (diff-review--write)
+  (unless (seq-every-p (lambda (c) (or (null (gethash "path" c))   ; a file new to the review
+                                       (diff-review--file-index (gethash "path" c))))
+                       diff-review--comments)
+    (diff-review--scan))
   (diff-review--render-all)
   (diff-review--redecorate-files))
 
@@ -729,7 +753,7 @@ Review-wide comments first, then by file in the tree's order, then by line."
 (defun diff-review--render ()
   "Redraw the overview.  The review buffer must be current."
   (let ((inhibit-read-only t)
-        (n (length diff-review--files)))
+        (n (seq-count (lambda (f) (not (equal (plist-get f :status) " "))) diff-review--files)))
     (erase-buffer)
     (magit-insert-section (diff-review-root)
       (insert (propertize (format "%s %s %s" diff-review--head-name
@@ -774,10 +798,6 @@ The review buffer must be current."
   "Read the file, scan git and render.  The buffer holds the file's text."
   (diff-review--read)
   (diff-review--scan)
-  (let ((path (and diff-review--index
-                   (< diff-review--index (length diff-review--files))
-                   (plist-get (diff-review--file) :path))))
-    (setq diff-review--index (and path (diff-review--file-index path))))
   (diff-review--render-all)
   (diff-review--redecorate-files))   ; an agent may have written comments
 
@@ -1513,17 +1533,13 @@ On `post-command-hook' in a file under review; nothing elsewhere."
 
 (defun diff-review--goto-comment (id)
   "Show comment ID where it is: its file at its lines.
-A file outside the diff is visited plainly, there being no hunks to
-draw.  The review buffer must be current."
+The review buffer must be current."
   (let* ((comment (or (diff-review--comment id) (user-error "No comment %s" id)))
          (path (gethash "path" comment))
-         (lines (diff-review--comment-lines comment))
          (i (and path (diff-review--file-index path))))
     (cond ((null path) (message "This comment is on the review as a whole"))
           (i (with-current-buffer (diff-review--open i) (diff-review--goto-thread comment)))
-          (t (diff-review--show-in-main
-              (find-file-noselect (expand-file-name path diff-review--root)))
-             (when lines (diff-review--goto-line (car lines)))))))
+          (t (message "The review has no file %s" path)))))
 
 (defun diff-review--region-lines ()
   "The lines the region covers, else the line at point, as (FIRST . LAST).

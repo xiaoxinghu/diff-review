@@ -163,7 +163,8 @@ comments. `lines` is first and last, inclusive, counted in the file content
 `git diff` of the two blobs, and says `outdated` when a change landed inside
 them. Without `blob` the lines count in the file as it is now; Emacs always
 writes it. `path` is relative to the root and may name a file outside the
-diff: that thread lists in the overview and `RET` visits the file plainly.
+diff: that file joins the review's tree as unchanged, so its threads are
+reached like any other.
 Keys Emacs does not know are kept as they are, in a comment too, which is
 where an agent puts a severity or a confidence.
 
