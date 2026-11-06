@@ -913,6 +913,39 @@ the hunks keep their overlays, removed lines and moves."
     (should-not (overlays-in (point-min) (point-max)))
     (should-not (memq #'diff-review--track-threads post-command-hook))))
 
+(ert-deftest diff-review-test-comment-names-the-buffer-s-file ()
+  "A comment from a file that is not the one shown names its own file.
+Redrawing after a write keeps each file's threads in that file."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (let ((a (window-buffer)))
+      (diff-review--in-review (diff-review--open (diff-review--file-index "src/b.txt")))
+      (with-current-buffer a
+        (cl-letf (((symbol-function 'read-string-from-buffer) (lambda (_p _s) "from a")))
+          (goto-char (point-min))
+          (diff-review-comment))
+        (should (equal (mapcar #'car (diff-review-test--threads)) '("from a")))
+        (should (equal (gethash "path" (aref (diff-review--in-review diff-review--comments) 0))
+                       "a.txt")))
+      (with-current-buffer (window-buffer)   ; src/b.txt
+        (should (null (diff-review--thread-overlays)))
+        (should (string-match-p " 1/2 M src/b.txt" (diff-review--file-header)))))))
+
+(ert-deftest diff-review-test-comment-on-unsaved-text ()
+  "A comment's lines and blob describe the buffer's text, saved or not."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (goto-char (point-min))
+    (insert "new\n")                    ; unsaved: a is on line 2 now
+    (cl-letf (((symbol-function 'read-string-from-buffer) (lambda (_p _s) "on a")))
+      (diff-review-comment))
+    (set-buffer-modified-p nil)
+    (let ((c (aref (diff-review--in-review diff-review--comments) 0)))
+      (should (equal (gethash "lines" c) [2 2]))
+      (should-not (equal (gethash "blob" c)
+                         (plist-get (diff-review--this-file) :hash)))   ; not the saved file's
+      (should (equal (mapcar #'cdr (diff-review-test--threads)) '((2 2 nil)))))))
+
 (ert-deftest diff-review-test-thread-follows-its-lines ()
   "A thread written against an older blob maps its lines; one inside a change is outdated."
   (diff-review-test--with-repo
