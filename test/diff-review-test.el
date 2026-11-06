@@ -513,7 +513,7 @@ TEXT defaults to changes at lines 2 and 4."
     (diff-review-next-file)
     (let ((keys (diff-review-test--header-keys)))
       (should (equal (substring-no-properties keys)
-                     "C-c _  n next hunk · v viewed · z focus · l overview"))
+                     "C-c _  n next hunk · v viewed · c comment · z focus · l overview"))
       (dolist (at '(0 4 7))                     ; C, _ and n
         (should (eq (get-text-property at 'face keys) 'help-key-binding)))
       (should (eq (get-text-property 9 'face keys) 'shadow)))))
@@ -528,10 +528,11 @@ TEXT defaults to changes at lines 2 and 4."
            `(((t . ,(define-keymap
                       "] c" #'diff-review-next-hunk
                       "z v" #'diff-review-viewed-and-next
+                      "g c" #'diff-review-comment
                       "z f" #'diff-review-toggle-focus
                       "g l" #'diff-review-overview))))))
       (should (equal (substring-no-properties (diff-review-test--header-keys))
-                     "] c next hunk · z v viewed · z f focus · g l overview")))))
+                     "] c next hunk · z v viewed · g c comment · z f focus · g l overview")))))
 
 (ert-deftest diff-review-test-mode-help-lists-the-keys ()
   "`C-h m' has a table of the prefix keys, and renders with no prefix."
@@ -805,6 +806,150 @@ the hunks keep their overlays, removed lines and moves."
                                 (evil-get-auxiliary-keymap
                                  diff-review-mode-map 'normal nil t))))
                  '(nil nil))))
+
+;;;; Comments
+
+(defun diff-review-test--review-json (repo)
+  "The review file of REPO, parsed."
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "review.json" repo))
+    (json-parse-string (buffer-string) :null-object nil :false-object nil)))
+
+(defun diff-review-test--thread-overlay ()
+  "The overlay of the one thread drawn in this buffer."
+  (seq-find (lambda (o) (overlay-get o 'diff-review-comment)) diff-review--overlays))
+
+(ert-deftest diff-review-test-comment-round-trip ()
+  "A comment on a region, a reply, a resolve and a delete go through the file."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (cl-letf (((symbol-function 'read-string-from-buffer) (lambda (_prompt _string) "Why?\n"))
+              ((symbol-function 'y-or-n-p) (lambda (_prompt) t)))
+      (let ((transient-mark-mode t))
+        (forward-line 1) (push-mark (point) t t) (forward-line 2)   ; lines 2 and 3
+        (diff-review-comment))
+      (should (= 1 (length diff-review--threads)))
+      (let ((c (car (car diff-review--threads))))
+        (should (equal (gethash "path" c) "a.txt"))
+        (should (equal (gethash "lines" c) [2 3]))
+        (should (equal (gethash "blob" c)
+                       (diff-review--in-review (plist-get (diff-review--file) :hash))))
+        (should (equal (gethash "body" c) "Why?"))
+        (should (and (gethash "id" c) (gethash "author" c) (gethash "at" c))))
+      (goto-char (point-min)) (forward-line 2)   ; line 3, inside the thread
+      (diff-review-reply)
+      (diff-review-toggle-resolved)
+      (let ((c (aref (gethash "comments" (diff-review-test--review-json repo)) 0)))
+        (should (equal (gethash "body" (aref (gethash "replies" c) 0)) "Why?"))
+        (should (eq (gethash "resolved" c) t)))
+      (should (string-match-p "resolved"
+                              (overlay-get (diff-review-test--thread-overlay) 'after-string)))
+      (should (string-match-p "1 comment, 0 open"
+                              (with-current-buffer diff-review--review (buffer-string))))
+      (diff-review-delete-comment)
+      (should (null diff-review--threads))
+      (should (equal (gethash "comments" (diff-review-test--review-json repo)) [])))))
+
+(ert-deftest diff-review-test-thread-follows-its-lines ()
+  "A thread written against an older blob maps its lines; one inside a change is outdated."
+  (diff-review-test--with-repo
+    ;; HEAD has a B c d; the worktree gets a line on top, and d changed.
+    (diff-review-test--at-a repo "0\na\nB\nc\nD\n")
+    (let ((old (diff-review--in-review (diff-review--git "rev-parse" "HEAD:a.txt"))))
+      (diff-review--in-review
+        (diff-review--add-comment "a.txt" '(2 . 2) old "on B")
+        (diff-review--add-comment "a.txt" '(4 . 4) old "on d")
+        (diff-review--add-comment "a.txt" '(5 . 5) nil "no blob")))
+    (should (equal (sort (mapcar (lambda (th) (cons (gethash "body" (car th)) (cdr th)))
+                                 diff-review--threads)
+                         (lambda (a b) (string< (car a) (car b))))
+                   '(("no blob" 5 5 nil) ("on B" 3 3 nil) ("on d" 4 4 t))))))
+
+(ert-deftest diff-review-test-agent-comment-as-written ()
+  "An agent's comment, with false and a key of its own, comes back as it went in."
+  (diff-review-test--with-repo
+    (diff-review-test--write
+     "review.json"
+     (concat "{\"format\": \"diff-review/1\", \"base\": \"main\", \"comments\": ["
+             "{\"id\": \"x1\", \"path\": \"a.txt\", \"lines\": [4, 4], \"author\": \"agent\", "
+             "\"at\": \"2026-11-06T10:00:00+13:00\", \"body\": \"hm\", \"severity\": \"nit\", "
+             "\"resolved\": false}]}"))
+    (diff-review-test--at-a repo)
+    (should (equal (mapcar #'cdr diff-review--threads) '((4 4 nil))))
+    (diff-review--in-review (diff-review--set-viewed (diff-review--file) t))   ; a write
+    (let ((text (with-temp-buffer
+                  (insert-file-contents (expand-file-name "review.json" repo))
+                  (buffer-string))))
+      (should (string-match-p "\"severity\": \"nit\"" text))
+      (should (string-match-p "\"resolved\": null" text)))))
+
+(ert-deftest diff-review-test-overview-lists-the-threads ()
+  "The overview lists every thread, RET reaching its lines, in or outside the diff."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (diff-review-test--write "notes.md" "n1\nn2\n")   ; not in the diff
+    (let ((review (diff-review-test--open repo)))
+      (diff-review--add-comment nil nil nil "Overall fine")
+      (diff-review--add-comment "src/b.txt" '(1 . 1) nil "b?")
+      (diff-review--add-comment "notes.md" '(2 . 2) nil "outside")
+      (should (string-match-p "3 comments, 3 open" (buffer-string)))
+      (goto-char (point-min))
+      (search-forward "\nComments\n")
+      (should (looking-at "  review  "))
+      (diff-review-open-at-point)
+      (should (eq (window-buffer) review))
+      (forward-line 1)
+      (should (looking-at "  src/b.txt:1  "))
+      (diff-review-open-at-point)
+      (should (diff-review-test--at "src/b.txt" 1))
+      (should (with-current-buffer (window-buffer) diff-review--threads))
+      (diff-review-overview)
+      (with-current-buffer review
+        (goto-char (point-min))
+        (search-forward "  notes.md:2  ")
+        (diff-review-open-at-point))
+      (should (string-suffix-p "notes.md" (buffer-file-name (window-buffer))))
+      (should (= 2 (with-current-buffer (window-buffer) (line-number-at-pos)))))))
+
+(ert-deftest diff-review-test-walk-the-threads ()
+  "N and P walk the threads, across files; src/b.txt comes first, directories first."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (diff-review--in-review
+      (diff-review--add-comment "a.txt" '(4 . 4) nil "one")
+      (diff-review--add-comment "src/b.txt" '(1 . 1) nil "two"))
+    (goto-char (point-min))
+    (diff-review-next-comment)
+    (should (diff-review-test--at "a.txt" 4))
+    (with-current-buffer (window-buffer) (diff-review-previous-comment))
+    (should (diff-review-test--at "src/b.txt" 1))
+    (with-current-buffer (window-buffer) (diff-review-next-comment))
+    (should (diff-review-test--at "a.txt" 4))
+    (with-current-buffer (window-buffer) (diff-review-next-comment))
+    (should (diff-review-test--at "a.txt" 4))))
+
+(ert-deftest diff-review-test-focus-keeps-a-thread ()
+  "Folding the unchanged lines leaves a thread and its context in view."
+  (diff-review-test--with-repo
+    (let ((lines (lambda (from) (mapconcat (lambda (i) (format "l%d\n" i)) (number-sequence from 30) ""))))
+      (diff-review-test--write "long.txt" (funcall lines 1))
+      (diff-review-test--git "add" ".")
+      (diff-review-test--git "commit" "-q" "-m" "three")
+      (diff-review-test--write "long.txt" (concat "L1\n" (funcall lines 2))))
+    (delete-other-windows)
+    (diff-review-test--open repo)
+    (diff-review--add-comment "long.txt" '(20 . 20) nil "deep")
+    (diff-review--open (seq-position diff-review--files "long.txt"
+                                     (lambda (f p) (equal (plist-get f :path) p))))
+    (diff-review-toggle-focus)
+    (let ((hidden (lambda (line)
+                    (let ((pos (diff-review--line-pos line)))
+                      (seq-some (lambda (o) (and (overlay-get o 'display)
+                                                 (<= (overlay-start o) pos) (> (overlay-end o) pos)))
+                                diff-review--overlays)))))
+      (should (funcall hidden 10))
+      (should-not (funcall hidden 20))
+      (should (funcall hidden 28)))))
 
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here
