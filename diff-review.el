@@ -83,6 +83,9 @@
   :group 'tools
   :prefix "diff-review-")
 
+(defconst diff-review-version "0.1.0"
+  "The version of diff-review, as in the Version header.")
+
 (defcustom diff-review-default-base #'diff-review-default-branch
   "The base of a new review: a revision, or a function returning one.
 The function is called with `default-directory' at the repository's
