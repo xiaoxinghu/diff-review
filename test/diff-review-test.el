@@ -946,6 +946,30 @@ Redrawing after a write keeps each file's threads in that file."
                          (plist-get (diff-review--this-file) :hash)))   ; not the saved file's
       (should (equal (mapcar #'cdr (diff-review-test--threads)) '((2 2 nil)))))))
 
+(ert-deftest diff-review-test-thread-on-the-last-line ()
+  "A comment on the empty line a file ends with hangs under the last line of text."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (cl-letf (((symbol-function 'read-string-from-buffer) (lambda (_p _s) "at the end")))
+      (goto-char (point-max))
+      (diff-review-comment))
+    (let ((c (aref (diff-review--in-review diff-review--comments) 0)))
+      (should (equal (gethash "lines" c) [5 5]))
+      (should (equal (mapcar #'cdr (diff-review-test--threads)) '((4 4 nil)))))))
+
+(ert-deftest diff-review-test-lines-count-the-whole-file ()
+  "In a narrowed buffer a comment's lines, and its drawing, count from the file's top."
+  (diff-review-test--with-repo
+    (diff-review-test--at-a repo)
+    (narrow-to-region (diff-review--line-pos 3) (point-max))
+    (cl-letf (((symbol-function 'read-string-from-buffer) (lambda (_p _s) "narrow")))
+      (goto-char (point-min))
+      (diff-review-comment))
+    (should (equal (gethash "lines" (aref (diff-review--in-review diff-review--comments) 0))
+                   [3 3]))
+    (should (equal (mapcar #'cdr (diff-review-test--threads)) '((3 3 nil))))
+    (widen)))
+
 (ert-deftest diff-review-test-thread-follows-its-lines ()
   "A thread written against an older blob maps its lines; one inside a change is outdated."
   (diff-review-test--with-repo
@@ -983,17 +1007,21 @@ Redrawing after a write keeps each file's threads in that file."
     (delete-other-windows)
     (diff-review-test--write "notes.md" "n1\nn2\n")   ; not in the diff
     (let ((review (diff-review-test--open repo)))
-      (diff-review--add-comment nil nil nil "Overall fine")
+      (let ((c (diff-review--add-comment nil nil nil "Overall fine.\nSecond line.")))
+        (puthash "replies" (vector (diff-review--message "claude" "Thanks.")) c)
+        (puthash "comments" diff-review--comments diff-review--data))
       (diff-review--add-comment "src/b.txt" '(1 . 1) nil "b?")
       (diff-review--add-comment "notes.md" '(2 . 2) nil "outside")
       (should (string-match-p "3 comments, 3 open" (buffer-string)))
       (goto-char (point-min))
       (search-forward "\nComments\n")
       (should (looking-at "  review  "))
-      (diff-review-open-at-point)
+      (should (string-match-p "Second line\.\n.*claude.*\n.*Thanks\." (buffer-string)))
+      (diff-review-open-at-point)             ; folds the review-wide thread
       (should (eq (window-buffer) review))
-      (forward-line 1)
-      (should (looking-at "  src/b.txt:1  "))
+      (should (invisible-p (save-excursion (forward-line 1) (point))))
+      (search-forward "  src/b.txt:1  ")
+      (beginning-of-line)
       (diff-review-open-at-point)
       (should (diff-review-test--at "src/b.txt" 1))
       (should (with-current-buffer (window-buffer) (diff-review--thread-overlays)))
