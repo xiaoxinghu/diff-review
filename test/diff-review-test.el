@@ -1255,10 +1255,39 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
     (delete-other-windows)
     (diff-review-test--open repo "stale.json" "HEAD~2" "stale")
     (diff-review--open 1)
-    (let ((dir (diff-review--in-review diff-review--worktree)))
+    (let* ((review (diff-review--review-buffer))
+           (dir (buffer-local-value 'diff-review--worktree review))
+           (edited (find-file-noselect (expand-file-name "src/b.txt" dir))))
+      (with-current-buffer edited           ; unsaved edits, past the read-only
+        (let ((inhibit-read-only t)) (insert "x")))
+      (with-current-buffer review (diff-review-quit))
+      (should (buffer-live-p edited))
+      (should (file-directory-p dir))
+      ;; Changes on disk keep it as well.
+      (set-buffer-modified-p nil)
+      (kill-buffer edited)
+      (diff-review-test--open repo "stale2.json" "HEAD~2" "stale")
+      (diff-review--open 1)
       (with-temp-file (expand-file-name "note.txt" dir) (insert "mine\n"))
       (diff-review-quit)
       (should (file-exists-p (expand-file-name "note.txt" dir))))))
+
+(ert-deftest diff-review-test-revision-buffers-are-the-reviews-own ()
+  "Two reviews of the same head name and path keep separate revision buffers."
+  (diff-review-test--with-repo
+    (delete-other-windows)
+    (let ((one (diff-review-test--open repo "one.json" "HEAD^" "HEAD")))
+      (diff-review--open 1)
+      (let ((first (window-buffer))
+            (two (diff-review-test--open repo "two.json" "HEAD^" "HEAD")))
+        (diff-review--open 1)
+        (should-not (eq (window-buffer) first))
+        (should (eq (buffer-local-value 'diff-review--review first) one))
+        (should (eq (buffer-local-value 'diff-review--review (window-buffer)) two))
+        (with-current-buffer two (diff-review-quit))
+        (should (buffer-live-p first))
+        (with-current-buffer one (diff-review--open 1))
+        (should (eq (window-buffer) first))))))
 
 (ert-deftest diff-review-test-file-absent-from-a-clean-checkout ()
   "A file the matching worktree has not on disk, as a sparse checkout omits, is a blob."

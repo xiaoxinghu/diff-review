@@ -195,6 +195,7 @@ Without a background of its own, it takes `diff-review-comment's.")
 (defvar-local diff-review--tip nil "Full SHA the head named at the last scan, or nil for the worktree.")
 (defvar-local diff-review--moved nil "Full SHA the head has moved to since the last scan, or nil.")
 (defvar-local diff-review--worktree nil "The throwaway worktree of the head, once added.")
+(defvar-local diff-review--blobs nil "Alist of a revision buffer's name to the buffer, this review's.")
 (defvar-local diff-review--files nil "Vector of file plists, in tree order.")
 (defvar-local diff-review--index nil "Index of the file shown, or nil for none.")
 (defvar-local diff-review--viewed nil "Hash table of path to the blob hash it was viewed at.")
@@ -1249,9 +1250,14 @@ take: then BUFFER goes where `display-buffer' says."
 KEY identifies the content, a blob hash or a commit: the buffer is built
 once and reused while its KEY holds, so revisits cost no git call and no
 mode start, and its overlays are not emptied onto the first line.  It is
-named for the head, so one buffer follows the branch."
-  (let ((buffer (get-buffer-create (format "*%s: %s*" (if deleted "deleted" diff-review--head-name)
-                                           path))))
+named for the head, so one buffer follows the branch, and it is this
+review's: another review of the same name and path has its own.  The
+review buffer must be current."
+  (let* ((name (format "*%s: %s*" (if deleted "deleted" diff-review--head-name) path))
+         (buffer (alist-get name diff-review--blobs nil nil #'equal)))
+    (unless (buffer-live-p buffer)
+      (setq buffer (generate-new-buffer name))
+      (setf (alist-get name diff-review--blobs nil nil #'equal) buffer))
     (unless (equal (buffer-local-value 'diff-review--blob buffer) key)
       (let ((contents (diff-review--git "show" (concat rev ":" path)))
             (root diff-review--root))
@@ -1318,15 +1324,18 @@ that is not one, a branch's review file in review/worktrees/..., stays."
   "Remove this review's throwaway worktree, which this Emacs added and locked.
 Every buffer visiting a file in it goes first, one reached through xref
 too; its windows show what they did before.  One with changes in it, made
-past the read-only, is kept and named, for the user to take them from;
-it stays until this Emacs is gone."
+past the read-only, on disk or unsaved in a buffer, is kept and named,
+for the user to take them from; it stays until this Emacs is gone."
   (when diff-review--worktree
-    (let ((dir diff-review--worktree))
-      (if (not (equal (ignore-errors (diff-review--git-at dir "status" "--porcelain")) ""))
+    (let* ((dir diff-review--worktree)
+           (buffers (seq-filter (lambda (b) (and (buffer-file-name b)
+                                                 (file-in-directory-p (buffer-file-name b) dir)))
+                                (buffer-list))))
+      (if (or (seq-some #'buffer-modified-p buffers)
+              (not (equal (ignore-errors (diff-review--git-at dir "status" "--porcelain")) "")))
           (message "Review worktree %s kept: it has changes" (abbreviate-file-name dir))
-        (dolist (buffer (buffer-list))
-          (when (and (buffer-file-name buffer) (file-in-directory-p (buffer-file-name buffer) dir))
-            (diff-review--leave buffer (lambda () (kill-buffer buffer)))))
+        (dolist (buffer buffers)
+          (diff-review--leave buffer (lambda () (kill-buffer buffer))))
         (when-let* ((worktree (seq-find (lambda (w) (equal (plist-get w :path) dir))
                                         (ignore-errors (diff-review--worktrees diff-review--root)))))
           (when (equal (plist-get worktree :locked) (diff-review--lock-reason))
