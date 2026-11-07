@@ -1489,5 +1489,100 @@ one a running Emacs holds stays."
       (should (file-directory-p old))
       (should (file-directory-p new)))))
 
+;;;; The verdict
+
+(defun diff-review-test--verdict (review)
+  "The verdict in REVIEW's file on disk, as an alist."
+  (with-temp-buffer
+    (insert-file-contents (buffer-file-name review))
+    (alist-get 'verdict (json-parse-string (buffer-string) :object-type 'alist))))
+
+(ert-deftest diff-review-test-verdict-turns ()
+  "Approve, a commit on the branch, request changes: the three turns, in the
+file, the overview, the sidebar's and the file's headers."
+  (diff-review-test--with-repo
+    (let ((wt (diff-review-test--worktree repo "wt" "-b" "feature"))
+          (diff-review-author "rev"))
+      (diff-review-test--commit-in wt "a.txt" "a\nB\nc\nd\nE\n" "feature one")
+      (delete-other-windows)
+      (diff-review-branch "feature")
+      (diff-review--follow)
+      (let ((review (current-buffer))
+            (summary (lambda (review)
+                       (with-current-buffer review
+                         (substring-no-properties (diff-review--summary)))))
+            (header (lambda ()
+                      (with-current-buffer (window-buffer)
+                        (substring-no-properties (diff-review--file-header))))))
+        (should (eq (diff-review--turn) 'reviewer))
+        (should-not (string-match-p "approved\\|changes" (funcall summary review)))
+        ;; Approved at the tip: the merge's turn.
+        (execute-kbd-macro "A")
+        (let ((verdict (diff-review-test--verdict review)))
+          (should (equal (alist-get 'state verdict) "approved"))
+          (should (equal (alist-get 'head verdict) (diff-review--git "rev-parse" "feature")))
+          (should (equal (alist-get 'by verdict) "rev"))
+          (should (alist-get 'at verdict)))
+        (should (eq (diff-review--turn) 'merge))
+        (should (string-match-p "approved" (buffer-string)))
+        (should (string-match-p "approved\\'" (with-current-buffer diff-review--sidebar
+                                                (substring-no-properties
+                                                 (diff-review-sidebar--header)))))
+        (diff-review--open 0)
+        (should (string-match-p "approved" (funcall header)))
+        ;; A commit on the branch: the reviewer's turn, noticed before the rescan.
+        (diff-review-test--commit-in wt "a.txt" "a\nB\nc\nd\nE\nf\n" "feature two")
+        (diff-review-overview)
+        (diff-review--check-tip (selected-window))
+        (should (eq (diff-review--turn) 'reviewer))
+        (should (string-match-p "approved, stale" (funcall summary review)))
+        (diff-review-refresh)
+        (should (eq (diff-review--turn) 'reviewer))
+        (diff-review--open 0)
+        (should (string-match-p "approved, stale" (funcall header)))
+        ;; Changes at the new tip: the author's turn.
+        (diff-review-overview)
+        (execute-kbd-macro "C")
+        (should (equal (alist-get 'state (diff-review-test--verdict review)) "changes"))
+        (should (equal (alist-get 'head (diff-review-test--verdict review))
+                       (diff-review--git "rev-parse" "feature")))
+        (should (eq (diff-review--turn) 'author))
+        (diff-review--open 0)
+        (should (string-match-p "changes requested" (funcall header)))
+        (should-not (string-match-p "stale" (funcall header)))))))
+
+(ert-deftest diff-review-test-verdict-written-beside ()
+  "An agent's verdict shows after the reread, and Emacs's own keeps its keys."
+  (diff-review-test--with-repo
+    (let ((wt (diff-review-test--worktree repo "wt" "-b" "feature")))
+      (diff-review-test--commit-in wt "a.txt" "a\nB\nc\nd\nE\n" "feature one")
+      (delete-other-windows)
+      (diff-review-branch "feature")
+      (let* ((review (current-buffer))
+             (data (with-temp-buffer
+                     (insert-file-contents (buffer-file-name review))
+                     (json-parse-string (buffer-string)))))
+        (puthash "verdict" (map-into `(("state" . "changes")
+                                       ("head" . ,(diff-review--git "rev-parse" "feature"))
+                                       ("by" . "agent") ("at" . "2026-11-07T10:02:00+13:00")
+                                       ("round" . 2))
+                                     '(hash-table :test equal))
+                 data)
+        (with-temp-file (buffer-file-name review) (insert (json-serialize data)))
+        (revert-buffer)                 ; as auto-revert does
+        (should (eq (diff-review--turn) 'author))
+        (should (string-match-p "changes requested" (buffer-string)))
+        (diff-review-approve)
+        (let ((verdict (diff-review-test--verdict review)))
+          (should (equal (alist-get 'state verdict) "approved"))
+          (should (equal (alist-get 'round verdict) 2)))))))
+
+(ert-deftest diff-review-test-verdict-needs-a-commit ()
+  "A review of the worktree has no commit to give a verdict on."
+  (diff-review-test--with-repo
+    (diff-review-test--open repo)
+    (should-error (diff-review-approve) :type 'user-error)
+    (should-not (diff-review-test--verdict (current-buffer)))))
+
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here
