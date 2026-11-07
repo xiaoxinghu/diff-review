@@ -270,7 +270,7 @@ is nil at a detached HEAD, and a bare one has no :head."
   (mapcar (lambda (record)
             (let (plist)
               (dolist (line (split-string record "\n" t))
-                (pcase (and (string-match "\\`\\([a-z]+\\)\\(?: \\(.*\\)\\)?\\'" line)
+                (pcase (and (string-match "\\`\\([A-Za-z]+\\)\\(?: \\(.*\\)\\)?\\'" line)
                             (list (match-string 1 line) (match-string 2 line)))
                   (`("worktree" ,path)
                    (setq plist (plist-put plist :path (file-name-as-directory path))))
@@ -280,6 +280,11 @@ is nil at a detached HEAD, and a bare one has no :head."
                   (`("locked" ,reason) (setq plist (plist-put plist :locked (or reason ""))))))
               plist))
           (split-string (diff-review--git-at root "worktree" "list" "--porcelain") "\n\n" t)))
+
+(defun diff-review--main-worktree (directory)
+  "The main worktree of the repository DIRECTORY belongs to, or nil.
+DIRECTORY may be inside the git directory, where a branch's review lives."
+  (plist-get (car (ignore-errors (diff-review--worktrees directory))) :path))
 
 (defun diff-review-default-branch ()
   "The default branch of the repository at `default-directory'.
@@ -446,12 +451,14 @@ As (PATH . HASH); a path git has not is left to the overview's list."
                          (diff-review--toplevel (file-name-directory buffer-file-name)))))
     (unless (equal (gethash "format" data) diff-review-format)
       (user-error "Not a review file: format is %S" (gethash "format" data)))
+    ;; A root that is gone, a removed worktree's, gives way to the main one.
     (setq diff-review--root
-          (cond (root (file-name-as-directory (expand-file-name root)))
+          (cond ((and root (file-directory-p (expand-file-name root)))
+                 (file-name-as-directory (expand-file-name root)))
                 (file-root)
-                (t (user-error "The review names no root and is not inside a repository"))))
-    (unless (file-directory-p diff-review--root)
-      (user-error "The review's root %s does not exist" diff-review--root))
+                ((and buffer-file-name
+                      (diff-review--main-worktree (file-name-directory buffer-file-name))))
+                (t (user-error "The review names no root that exists and is not in a repository"))))
     (puthash "root" diff-review--root data)
     (puthash "base" (or (gethash "base" data) (diff-review--default-base diff-review--root))
              data)
@@ -1013,8 +1020,9 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
   ;; Local: a commit on the branch is noticed when the overview is shown or selected.
   (add-hook 'window-selection-change-functions #'diff-review--check-tip nil t)
   (add-hook 'window-buffer-change-functions #'diff-review--check-tip nil t)
-  ;; Global, so it lives only while there is a review: see `diff-review--close'.
+  ;; Global, so they live only while there is a review: see `diff-review--close'.
   (add-hook 'window-buffer-change-functions #'diff-review--follow)
+  (add-hook 'find-file-hook #'diff-review--protect)
   (display-line-numbers-mode -1)
   (auto-revert-mode 1)
   (diff-review--load))
@@ -1055,7 +1063,19 @@ off the window hook."
                              (provided-mode-derived-p (buffer-local-value 'major-mode buffer)
                                                       'diff-review-mode)))
                       (buffer-list))
-      (remove-hook 'window-buffer-change-functions #'diff-review--follow))))
+      (remove-hook 'window-buffer-change-functions #'diff-review--follow)
+      (remove-hook 'find-file-hook #'diff-review--protect))))
+
+(defun diff-review--protect ()
+  "Make a file visited in a review's throwaway worktree read-only.
+On `find-file-hook' while a review is open: the worktree goes with its
+review, so a file reached there through xref is as read-only as one the
+review opened."
+  (when (seq-some (lambda (buffer)
+                    (when-let* ((dir (buffer-local-value 'diff-review--worktree buffer)))
+                      (file-in-directory-p buffer-file-name dir)))
+                  (buffer-list))
+    (setq buffer-read-only t)))
 
 ;;;; The sidebar
 
@@ -1297,17 +1317,21 @@ that is not one, a branch's review file in review/worktrees/..., stays."
 (defun diff-review--remove-worktree ()
   "Remove this review's throwaway worktree, which this Emacs added and locked.
 Every buffer visiting a file in it goes first, one reached through xref
-too; its windows show what they did before."
+too; its windows show what they did before.  One with changes in it, made
+past the read-only, is kept and named, for the user to take them from;
+it stays until this Emacs is gone."
   (when diff-review--worktree
     (let ((dir diff-review--worktree))
-      (dolist (buffer (buffer-list))
-        (when (and (buffer-file-name buffer) (file-in-directory-p (buffer-file-name buffer) dir))
-          (diff-review--leave buffer (lambda () (kill-buffer buffer)))))
-      (when-let* ((worktree (seq-find (lambda (w) (equal (plist-get w :path) dir))
-                                      (ignore-errors (diff-review--worktrees diff-review--root)))))
-        (when (equal (plist-get worktree :locked) (diff-review--lock-reason))
-          (diff-review--remove-worktree-at worktree)
-          (ignore-errors (diff-review--git "worktree" "prune")))))
+      (if (not (equal (ignore-errors (diff-review--git-at dir "status" "--porcelain")) ""))
+          (message "Review worktree %s kept: it has changes" (abbreviate-file-name dir))
+        (dolist (buffer (buffer-list))
+          (when (and (buffer-file-name buffer) (file-in-directory-p (buffer-file-name buffer) dir))
+            (diff-review--leave buffer (lambda () (kill-buffer buffer)))))
+        (when-let* ((worktree (seq-find (lambda (w) (equal (plist-get w :path) dir))
+                                        (ignore-errors (diff-review--worktrees diff-review--root)))))
+          (when (equal (plist-get worktree :locked) (diff-review--lock-reason))
+            (diff-review--remove-worktree-at worktree)
+            (ignore-errors (diff-review--git "worktree" "prune"))))))
     (setq diff-review--worktree nil)))
 
 (defun diff-review--throwaway ()
@@ -2263,7 +2287,9 @@ worktree's uncommitted edits, visited in a worktree that has the branch
 checked out."
   (interactive (list (diff-review--read-branch)))
   (let ((root (diff-review--root-here)))
-    (diff-review-find-file (diff-review--branch-file root branch) root nil branch)))
+    ;; The main worktree as the root: the file outlives the worktree it was made from.
+    (diff-review-find-file (diff-review--branch-file root branch)
+                           (or (diff-review--main-worktree root) root) nil branch)))
 
 (provide 'diff-review)
 ;;; diff-review.el ends here

@@ -14,9 +14,10 @@
 (require 'hl-line)
 
 (defun diff-review-test--git (&rest args)
-  (unless (zerop (apply #'call-process "git" nil nil nil
-                        "-c" "user.name=t" "-c" "user.email=t@t" args))
-    (error "git %s failed" (string-join args " "))))
+  (with-temp-buffer
+    (unless (zerop (apply #'call-process "git" nil t nil
+                          "-c" "user.name=t" "-c" "user.email=t@t" args))
+      (error "git %s failed: %s" (string-join args " ") (string-trim (buffer-string))))))
 
 (defun diff-review-test--write (path text)
   (when-let* ((dir (file-name-directory path)))
@@ -1217,6 +1218,8 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
     (let ((wt (diff-review-test--worktree repo "wt" "-b" "feat/x")) seen)
       (should (diff-review-test--same-file-p (diff-review--branch-file repo "feat/x")
                                              (expand-file-name ".git/review/feat/x.json" repo)))
+      (let ((case-fold-search nil))      ; git's HEAD is read whatever the user's setting
+        (should (plist-get (car (diff-review--worktrees repo)) :head)))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt collection &rest _) (setq seen collection) (car collection))))
         (should (equal (diff-review--read-branch) "feat/x"))
@@ -1228,6 +1231,34 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
       (should (file-exists-p (expand-file-name ".git/review/feat/x.json" repo)))
       (should (equal diff-review--head "feat/x"))
       (should (equal diff-review--head-name "feat/x")))))
+
+(ert-deftest diff-review-test-branch-review-outlives-its-worktree ()
+  "A review made from a worktree opens from main after the worktree is gone, marks kept."
+  (diff-review-test--with-repo
+    (let ((wt (diff-review-test--worktree repo "wt" "-b" "feature")))
+      (diff-review-test--commit-in wt "a.txt" "a\nB\nc\nd\nE\n" "feature one")
+      (delete-other-windows)
+      (diff-review-find-file (diff-review--branch-file repo "feature") wt nil "feature")
+      (diff-review--set-viewed (diff-review--file 0) t)
+      (kill-buffer)                     ; the current buffer, and its default-directory, change
+      (let ((default-directory repo))
+        (diff-review-test--git "worktree" "remove" "--force" wt)
+        (diff-review-branch "feature"))
+      (should (diff-review-test--same-file-p diff-review--root repo))
+      (should (diff-review--viewed-p (diff-review--file 0))))))
+
+(ert-deftest diff-review-test-changed-throwaway-is-kept ()
+  "A throwaway worktree with changes in it is not removed on quit."
+  (diff-review-test--with-repo
+    (diff-review-test--git "branch" "stale")
+    (diff-review-test--git "commit" "-q" "-am" "three")
+    (delete-other-windows)
+    (diff-review-test--open repo "stale.json" "HEAD~2" "stale")
+    (diff-review--open 1)
+    (let ((dir (diff-review--in-review diff-review--worktree)))
+      (with-temp-file (expand-file-name "note.txt" dir) (insert "mine\n"))
+      (diff-review-quit)
+      (should (file-exists-p (expand-file-name "note.txt" dir))))))
 
 (ert-deftest diff-review-test-file-absent-from-a-clean-checkout ()
   "A file the matching worktree has not on disk, as a sparse checkout omits, is a blob."
@@ -1305,6 +1336,7 @@ the worktree follows the tip on a rescan and goes on quit."
           (should buffer-read-only)
           (should (equal (buffer-string) "a\nB\nc\nd\nE\n"))))
       (let ((other (find-file-noselect (expand-file-name "src/b.txt" dir))))   ; as xref would
+        (should (buffer-local-value 'buffer-read-only other))
         (with-current-buffer review (diff-review-quit))
         (should-not (buffer-live-p file))
         (should-not (buffer-live-p other)))

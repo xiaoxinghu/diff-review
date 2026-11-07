@@ -70,6 +70,8 @@ the review removes when it ends, and their files open there read-only. It
 is one review's, locked for the Emacs that added it; a second review of
 the same commit meanwhile shows read-only buffers of the files instead,
 and one a killed Emacs left goes with the next review that needs one.
+Files reached in it through `xref` are read-only too; one changed anyway
+keeps the worktree, named in a message, until this Emacs is gone.
 Ignored files are not in it, so dependencies such as `node_modules` are
 absent: relative imports resolve, package imports read as unresolved. A
 deleted file shows its base version.
