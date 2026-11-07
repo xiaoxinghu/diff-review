@@ -47,7 +47,9 @@
 ;;    "base": "main",                  optional: `diff-review-default-base'
 ;;    "head": "abc1234",               optional: the worktree
 ;;    "viewed": {"src/a.ts": "<blob hash>"},
-;;    "comments": [...]}               optional: see below
+;;    "comments": [...],               optional: see below
+;;    "verdict": {"state": "approved", "head": "<full hash>",
+;;                "by": "claude", "at": "..."}}   optional: see below
 ;;
 ;; Comments are threads on some lines of a file, as on a pull request
 ;; page, kept in the same file so an agent reads and writes one thing.
@@ -67,6 +69,11 @@
 ;;    "body": "Retries forever when the socket is gone.",
 ;;    "replies": [{"author": "claude", "at": "...", "body": "Capped in 3b1c0e2."}],
 ;;    "resolved": true}               optional
+;;
+;; The verdict is the reviewer's last word, "changes" or "approved", on the
+;; commit "head" names.  It says whose turn the review is without reading
+;; the threads: the author's after changes, the merge's once approved, the
+;; reviewer's when there is none or the head has moved past it.
 ;;
 ;; The review buffer is an ordinary buffer: hide it, show it, kill it to
 ;; end the review.  Files keep a pointer back to it.  The files it shows
@@ -588,6 +595,52 @@ Without PATH it is on the review as a whole.  The review buffer must be current.
      (lambda () (setq diff-review--comments (vconcat diff-review--comments (vector c)))))
     c))
 
+;;;; The verdict
+
+(defun diff-review--turn ()
+  "Whose turn the review is: `reviewer', `author' or `merge'.
+A verdict is on the commit it names, so a tip past it, or a verdict
+this does not know, leaves the turn the reviewer's.  The tip is the
+branch's, moved or not.  The review buffer must be current."
+  (let ((verdict (gethash "verdict" diff-review--data)))
+    (if (not (and (hash-table-p verdict)
+                  (equal (gethash "head" verdict) (or diff-review--moved diff-review--tip))))
+        'reviewer
+      (pcase (gethash "state" verdict)
+        ("changes" 'author)
+        ("approved" 'merge)
+        (_ 'reviewer)))))
+
+(defun diff-review--verdict-text ()
+  "The verdict as the summaries show it, or an empty string.
+The review buffer must be current."
+  (let* ((verdict (gethash "verdict" diff-review--data))
+         (state (and (hash-table-p verdict) (gethash "state" verdict)))
+         (label (pcase state ("changes" "changes requested") ("approved" "approved"))))
+    (cond ((null label) "")
+          ((eq (diff-review--turn) 'reviewer)
+           (propertize (concat label ", stale") 'face 'shadow))
+          (t (propertize label 'face (if (equal state "approved") 'success 'warning))))))
+
+(defun diff-review--set-verdict (state)
+  "Write the verdict STATE on the tip the review shows, and redraw.
+The review buffer must be current."
+  (let ((tip (or diff-review--tip
+                 (user-error "A verdict is on a commit: this review is of the worktree"))))
+    (unless (verify-visited-file-modtime) ; someone else wrote it: take theirs first
+      (diff-review--revert))
+    ;; The same table: keys this does not know stay, as everywhere in the file.
+    (let ((verdict (gethash "verdict" diff-review--data)))
+      (unless (hash-table-p verdict)
+        (setq verdict (make-hash-table :test #'equal)))
+      (puthash "state" state verdict)
+      (puthash "head" tip verdict)
+      (puthash "by" (diff-review--author) verdict)
+      (puthash "at" (format-time-string "%FT%T%:z") verdict)
+      (puthash "verdict" verdict diff-review--data))
+    (diff-review--write)
+    (diff-review--render-all)))
+
 (defun diff-review--hunk-field (n)
   "Group N of the hunk header just matched, as a number; 1 when it is absent."
   (if (match-string n) (string-to-number (match-string n)) 1))
@@ -645,9 +698,10 @@ then the thread is outdated, as a pull request page says."
   (apply #'+ (mapcar (lambda (f) (plist-get f key)) files)))
 
 (defun diff-review--summary ()
-  "The viewed count, the line counts and the comment counts of the review."
+  "The viewed, line and comment counts of the review, and its verdict."
   (let ((n (length diff-review--comments))
-        (open (diff-review--open-count diff-review--comments)))
+        (open (diff-review--open-count diff-review--comments))
+        (verdict (diff-review--verdict-text)))
     (concat
      (format "%d/%d viewed  %s"
              (seq-count #'diff-review--viewed-p diff-review--files)
@@ -656,6 +710,7 @@ then the thread is outdated, as a pull request page says."
                                   (diff-review--sum diff-review--files :removed)))
      (if (zerop n) ""
        (format "  %d comment%s, %d open" n (if (= n 1) "" "s") open))
+     (if (string-empty-p verdict) "" (concat "  " verdict))
      (if (null diff-review--moved) ""
        (concat "  "
                (propertize (format "%s moved to %s," diff-review--head-name
@@ -974,6 +1029,18 @@ A file that changed since it was viewed loses its mark."
   (interactive)
   (diff-review--in-review (revert-buffer)))
 
+(defun diff-review-approve ()
+  "Approve the head as the review shows it, as `diff-review-author'.
+The verdict holds until the head moves past that commit."
+  (interactive)
+  (diff-review--in-review (diff-review--set-verdict "approved")))
+
+(defun diff-review-request-changes ()
+  "Ask for changes to the head as the review shows it, as `diff-review-author'.
+The threads say which; the verdict holds until the head moves past that commit."
+  (interactive)
+  (diff-review--in-review (diff-review--set-verdict "changes")))
+
 (defun diff-review-overview ()
   "Show the overview in the main window."
   (interactive)
@@ -1004,6 +1071,8 @@ A file that changed since it was viewed loses its mark."
   "v" #'diff-review-toggle-viewed
   "g" #'diff-review-refresh
   "t" #'diff-review-toggle-sidebar
+  "A" #'diff-review-approve
+  "C" #'diff-review-request-changes
   "q" #'diff-review-quit)
 
 ;;;###autoload
@@ -1015,6 +1084,7 @@ or folds a directory; a click on a file shows it too.
 \\[diff-review-next-unviewed] skips to the next unviewed one.
 \\[diff-review-toggle-viewed] toggles the viewed mark, \\[diff-review-refresh] rescans
 and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
+\\[diff-review-approve] approves the head and \\[diff-review-request-changes] asks for changes to it.
 \\[diff-review-quit] ends the review, as does killing the buffer.
 
 \\{diff-review-mode-map}"
@@ -2055,6 +2125,8 @@ shares is shown once, in front."
          (if (diff-review--viewed-p file)
              (propertize (concat (diff-review--glyph "✓" "*") " viewed") 'face 'success)
            (propertize (concat (diff-review--glyph "○" "o") " not viewed") 'face 'shadow))
+         (let ((verdict (diff-review--verdict-text)))
+           (if (string-empty-p verdict) "" (concat "   " verdict)))
          (propertize (if focus "   focus" "") 'face 'shadow)
          keys)))))
 
@@ -2249,6 +2321,8 @@ Set it before Evil or this package loads; nil leaves Evil untouched."
         "u" #'diff-review-next-unviewed
         "v" #'diff-review-toggle-viewed
         "t" #'diff-review-toggle-sidebar
+        "A" #'diff-review-approve
+        "C" #'diff-review-request-changes
         "q" (if (eq map diff-review-sidebar-mode-map)
                 #'diff-review-toggle-sidebar
               #'diff-review-quit)))))

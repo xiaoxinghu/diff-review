@@ -89,6 +89,8 @@ In the overview and the sidebar:
 | `v`   | toggle the viewed mark                   |
 | `g`   | rescan the diff                          |
 | `t`   | show or hide the sidebar                 |
+| `A`   | approve the head                         |
+| `C`   | request changes to the head              |
 | `q`   | end the review                           |
 
 In a file, `diff-review-file-mode` puts its commands under one prefix,
@@ -221,6 +223,51 @@ jq --arg blob "$(git hash-object -w src/a.ts)" --arg at "$(date -Iseconds)" \
 The author is `diff-review-author`, by default the repository's `user.name`.
 The time is RFC 3339 with the local offset. The body is plain text; nothing
 in it is rendered as markup.
+
+## Verdict
+
+`A` in the overview approves the head the review shows, `C` asks for changes
+to it; either writes the review's verdict, which tells whoever watches the
+file whose turn it is without reading the threads:
+
+```json
+"verdict": {"state": "changes", "head": "<full hash of the tip>",
+            "by": "claude", "at": "2026-11-07T10:02:00+13:00"}
+```
+
+`state` is `changes` or `approved`, `head` the commit the verdict is on, and
+`by` and `at` as a comment's `author` and `at`. A verdict is on its commit
+only, so a commit on the branch makes it stale: the overview, the sidebar
+and a file's header line show the verdict, and `stale` once the branch has
+moved past it.
+
+| the file and git                                   | whose turn |
+|----------------------------------------------------|------------|
+| no verdict, or `verdict.head` is not the branch tip | reviewer   |
+| `changes` at the tip                                | author     |
+| `approved` at the tip                               | merge      |
+
+The open threads are a detail of the review, not its turn. A review of the
+worktree has no commit to give a verdict on. A file without `verdict` has
+none, and keys Emacs does not know in it are kept.
+
+To give a verdict as an agent, with `jq`, beside the comments:
+
+```sh
+f=$(git rev-parse --git-common-dir)/review/feature.json
+jq --arg head "$(git rev-parse feature)" --arg at "$(date -Iseconds)" \
+  '.verdict = {state: "changes", head: $head, by: "claude", at: $at}' \
+  "$f" > "$f.new" && mv "$f.new" "$f"
+```
+
+And to read the turn:
+
+```sh
+jq -r --arg tip "$(git rev-parse feature)" \
+  'if .verdict.head != $tip then "reviewer"
+   elif .verdict.state == "changes" then "author"
+   elif .verdict.state == "approved" then "merge" else "reviewer" end' "$f"
+```
 
 ## Look
 
