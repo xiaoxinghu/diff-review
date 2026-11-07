@@ -1254,6 +1254,17 @@ the worktree follows the tip on a rescan and goes on quit."
         (should (diff-review-test--same-file-p buffer-file-name (expand-file-name "src/b.txt" dir))))
       (with-current-buffer review (diff-review--open 1))
       (should (eq (window-buffer) file))
+      ;; A second review of the commit gets no share of the worktree: blobs, and no removal.
+      (let ((second (diff-review-test--open repo "second.json" "HEAD~2" "stale")))
+        (diff-review--open 1)
+        (with-current-buffer (window-buffer)
+          (should diff-review-file-mode)
+          (should-not buffer-file-name))
+        (should-not (buffer-local-value 'diff-review--worktree second))
+        (with-current-buffer second (diff-review-quit))
+        (should (file-directory-p dir))
+        (with-current-buffer review (diff-review--open 1))
+        (should (eq (window-buffer) file)))
       ;; stale moves, by a commit in a worktree that then goes: still nobody has it.
       (let ((tmp (diff-review-test--worktree repo "tmp" "stale")))
         (diff-review-test--commit-in tmp "a.txt" "a\nB\nc\nd\nE\n" "stale two")

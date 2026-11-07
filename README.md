@@ -67,9 +67,9 @@ one shows the commit's version in a read-only buffer, as its hunks would
 not line up. Commits no worktree has are checked out under
 `review/worktrees/<hash>` in the common git directory, a throwaway worktree
 the review removes when it ends, and their files open there read-only. It
-is locked for the Emacs that added it, so another Emacs's review leaves
-it be, and one a killed Emacs left goes with the next review that needs
-one.
+is one review's, locked for the Emacs that added it; a second review of
+the same commit meanwhile shows read-only buffers of the files instead,
+and one a killed Emacs left goes with the next review that needs one.
 Ignored files are not in it, so dependencies such as `node_modules` are
 absent: relative imports resolve, package imports read as unresolved. A
 deleted file shows its base version.
