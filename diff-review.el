@@ -265,8 +265,8 @@ Without a background of its own, it takes `diff-review-comment's.")
 
 (defun diff-review--worktrees (root)
   "The worktrees of the repository at ROOT, the main one first.
-Plists with :path, :head and :branch; :branch is nil at a detached HEAD,
-and a bare one has no :head."
+Plists with :path, :head, :branch and :locked, the lock's reason; :branch
+is nil at a detached HEAD, and a bare one has no :head."
   (mapcar (lambda (record)
             (let (plist)
               (dolist (line (split-string record "\n" t))
@@ -276,7 +276,8 @@ and a bare one has no :head."
                    (setq plist (plist-put plist :path (file-name-as-directory path))))
                   (`("HEAD" ,sha) (setq plist (plist-put plist :head sha)))
                   (`("branch" ,ref)
-                   (setq plist (plist-put plist :branch (string-remove-prefix "refs/heads/" ref))))))
+                   (setq plist (plist-put plist :branch (string-remove-prefix "refs/heads/" ref))))
+                  (`("locked" ,reason) (setq plist (plist-put plist :locked (or reason ""))))))
               plist))
           (split-string (diff-review--git-at root "worktree" "list" "--porcelain") "\n\n" t)))
 
@@ -1209,13 +1210,17 @@ take: then BUFFER goes where `display-buffer' says."
                       (with-current-buffer buffer (diff-review--review-buffer)))))
         (progn (pop-to-buffer-same-window buffer)
                (selected-window))
-      (let ((prev (window-prev-buffers window))
-            (next (window-next-buffers window)))
-        (diff-review--undedicated window #'set-window-buffer window buffer)
-        (set-window-prev-buffers window prev)
-        (set-window-next-buffers window next)
-        (select-window window)
-        window))))
+      (diff-review--show-quietly window buffer)
+      (select-window window)
+      window)))
+
+(defun diff-review--show-quietly (window buffer)
+  "Show BUFFER in WINDOW, dedicated or not, its history left as it was."
+  (let ((prev (window-prev-buffers window))
+        (next (window-next-buffers window)))
+    (diff-review--undedicated window #'set-window-buffer window buffer)
+    (set-window-prev-buffers window prev)
+    (set-window-next-buffers window next)))
 
 (defun diff-review--blob-buffer (rev path key &optional deleted)
   "A read-only buffer with PATH as it is at REV; DELETED when the file is gone.
@@ -1257,66 +1262,94 @@ review shows what git has."
     (when read-only (with-current-buffer buffer (setq buffer-read-only t)))
     buffer))
 
-(defun diff-review--review-dir ()
-  "The review folder under the repository's common git directory."
-  (expand-file-name "review/" (diff-review--common-dir diff-review--root)))
+(defun diff-review--throwaway-dir ()
+  "The folder of the throwaway worktrees, under the common git directory."
+  (expand-file-name "review/worktrees/" (diff-review--common-dir diff-review--root)))
 
-(defun diff-review--remove-worktree-at (dir)
-  "Remove the throwaway worktree at DIR with its files, however it was left."
-  (condition-case nil
-      (diff-review--git "worktree" "remove" "--force" (directory-file-name dir))
-    (error (ignore-errors (delete-directory dir t)))))
+(defun diff-review--throwaway-p (worktree)
+  "Whether WORKTREE, a plist of `diff-review--worktrees', is a throwaway one."
+  (string-prefix-p (diff-review--throwaway-dir) (plist-get worktree :path)))
+
+(defun diff-review--lock-reason ()
+  "The lock a throwaway worktree of this Emacs carries: the package, its pid."
+  (format "diff-review %d" (emacs-pid)))
+
+(defun diff-review--held-p (worktree)
+  "Whether a running Emacs holds WORKTREE: its lock names a live process.
+Reviews in another Emacs are not this one's to end; a killed one's are."
+  (let ((reason (plist-get worktree :locked)))
+    (and reason
+         (string-match "\\`diff-review \\([0-9]+\\)\\'" reason)
+         (process-attributes (string-to-number (match-string 1 reason))))))
+
+(defun diff-review--remove-worktree-at (worktree)
+  "Remove WORKTREE, a plist, locked or not, with its files.
+Only what git lists as a worktree goes: a folder under the throwaways'
+that is not one, a branch's review file in review/worktrees/..., stays."
+  (ignore-errors
+    (diff-review--git "worktree" "remove" "--force" "--force"
+                      (directory-file-name (plist-get worktree :path)))))
 
 (defun diff-review--remove-worktree ()
-  "Remove this review's throwaway worktree, unless another open review shares it."
+  "Remove this review's throwaway worktree when it was this Emacs's to add.
+Another open review here, or a live review in another Emacs, holding
+the same commit's keeps it."
   (when diff-review--worktree
     (let ((review (current-buffer)) (dir diff-review--worktree))
       (unless (seq-some (lambda (b) (and (not (eq b review))
                                          (equal (buffer-local-value 'diff-review--worktree b) dir)))
                         (buffer-list))
-        (when (file-directory-p dir) (diff-review--remove-worktree-at dir))
-        (ignore-errors (diff-review--git "worktree" "prune"))))
+        (when-let* ((worktree (seq-find (lambda (w) (equal (plist-get w :path) dir))
+                                        (ignore-errors (diff-review--worktrees diff-review--root)))))
+          (when (equal (plist-get worktree :locked) (diff-review--lock-reason))
+            (diff-review--remove-worktree-at worktree)
+            (ignore-errors (diff-review--git "worktree" "prune"))))))
     (setq diff-review--worktree nil)))
 
 (defun diff-review--throwaway ()
   "This review's throwaway worktree of the head, added on first use.
 It is review/worktrees/<hash> under the common git directory, named for
-the commit it was added at, and follows the head on a rescan.  Ignored
-files, dependencies among them, are not in it.  Leftovers of reviews no
-longer open, a killed Emacs's, go first, and git's record of a directory
-that is gone is pruned.  The review buffer must be current."
+the commit it was added at, and follows the head on a rescan; a worktree
+lock names the Emacs that added it.  Ignored files, dependencies among
+them, are not in it.  Throwaways no running Emacs holds, a killed one's,
+go first, and git's record of a directory that is gone is pruned.  The
+review buffer must be current."
   (unless (and diff-review--worktree (file-directory-p diff-review--worktree))
-    (let* ((dir (expand-file-name "worktrees/" (diff-review--review-dir)))
-           (worktree (file-name-as-directory (expand-file-name diff-review--tip dir)))
-           (live (mapcar (lambda (b) (buffer-local-value 'diff-review--worktree b))
-                         (buffer-list))))
-      (dolist (old (and (file-directory-p dir) (directory-files dir t "\\`[^.]")))
-        (unless (member (file-name-as-directory old) live)
+    (let ((worktree (file-name-as-directory
+                     (expand-file-name diff-review--tip (diff-review--throwaway-dir)))))
+      (dolist (old (diff-review--worktrees diff-review--root))
+        (when (and (diff-review--throwaway-p old) (not (diff-review--held-p old)))
           (diff-review--remove-worktree-at old)))
       (diff-review--git "worktree" "prune")
-      (unless (file-directory-p worktree)   ; another open review's, at the same commit
-        (make-directory dir t)
+      (unless (file-directory-p worktree)   ; a live review's, here or in another Emacs
+        (make-directory (diff-review--throwaway-dir) t)
         (diff-review--git "worktree" "add" "--quiet" "--detach"
-                          (directory-file-name worktree) diff-review--tip))
+                          (directory-file-name worktree) diff-review--tip)
+        (diff-review--git "worktree" "lock" "--reason" (diff-review--lock-reason)
+                          (directory-file-name worktree)))
       (setq diff-review--worktree worktree)))
   diff-review--worktree)
 
 (defun diff-review--head-buffer (file)
   "A buffer with FILE as it is at the head: a real file where there is one.
 A worktree that has the head checked out, the main one included, with the
-file clean gives the file itself, so xref, eglot and project.el see an
-ordinary file in its tree; a dirty one would not line up with the hunks,
-so then it is the revision buffer.  Without such a worktree the file is
-visited, read-only, in the review's throwaway worktree of the head."
+file clean, on disk and in any buffer visiting it, gives the file itself,
+so xref, eglot and project.el see an ordinary file in its tree; a dirty
+one would not line up with the hunks, so then it is the revision buffer.
+Without such a worktree the file is visited, read-only, in the review's
+throwaway worktree of the head."
   (let* ((path (plist-get file :path))
-         (worktrees (seq-filter (lambda (w) (equal (plist-get w :head) diff-review--tip))
+         (worktrees (seq-filter (lambda (w) (and (equal (plist-get w :head) diff-review--tip)
+                                                 (not (diff-review--throwaway-p w))))
                                 (diff-review--worktrees diff-review--root)))
          (clean (seq-find (lambda (w)
-                            (and (file-directory-p (plist-get w :path))
-                                 (equal (ignore-errors
-                                          (diff-review--git-at (plist-get w :path)
-                                                               "status" "--porcelain" "--" path))
-                                        "")))
+                            (let ((dir (plist-get w :path)))
+                              (and (file-directory-p dir)
+                                   (equal (ignore-errors
+                                            (diff-review--git-at dir "status" "--porcelain" "--" path))
+                                          "")
+                                   (not (buffer-modified-p
+                                         (find-buffer-visiting (expand-file-name path dir)))))))
                           worktrees)))
     (cond (clean (diff-review--visit (expand-file-name path (plist-get clean :path))))
           (worktrees (diff-review--blob-for file))
@@ -1345,24 +1378,32 @@ throwaway worktree, is killed.  The review buffer must be current."
              (diff-review-file-mode -1)
            (kill-buffer)))))))
 
+(defun diff-review--file-buffer (file)
+  "The buffer that shows FILE as the review has it, made or brought up to date.
+The review buffer must be current."
+  (cond ((equal (plist-get file :status) "D") (diff-review--blob-for file))
+        (diff-review--head (diff-review--head-buffer file))
+        (t (find-file-noselect (expand-file-name (plist-get file :path) diff-review--root)))))
+
 (defun diff-review--refresh-files ()
   "Bring this review's open files up to date after a scan.
-A file the review no longer has leaves it.  The others follow the head: a
-real file changed under an unmodified buffer is reread, a revision buffer
-rebuilt, and the hunks are parsed again.  The review buffer must be current."
+A file the review no longer has leaves it.  Each other file is chosen
+again as on opening, so a buffer that no longer shows what the review
+has, a worktree's file dirtied or moved on, a file the head deleted,
+gives its windows to the one that does; the hunks are parsed again.  The
+review buffer must be current."
   (dolist (buffer (diff-review--file-buffers))
-    (let* ((path (buffer-local-value 'diff-review--file-path buffer))
-           (file (and-let* ((i (diff-review--file-index path))) (diff-review--file i))))
-      (cond ((null file) (diff-review--drop buffer))
-            ((buffer-file-name buffer)
-             (diff-review--visit (buffer-file-name buffer)
-                                 (buffer-local-value 'buffer-read-only buffer))
-             (diff-review--enter buffer path))
-            ((eq (buffer-local-value 'diff-review--deleted buffer)   ; the same kind of blob
-                 (equal (plist-get file :status) "D"))
-             (diff-review--blob-for file)
-             (diff-review--enter buffer path))
-            (t (diff-review--drop buffer))))))
+    (when (buffer-live-p buffer)        ; not dropped for an earlier one
+      (let* ((path (buffer-local-value 'diff-review--file-path buffer))
+             (file (and-let* ((i (diff-review--file-index path))) (diff-review--file i))))
+        (if (null file)
+            (diff-review--drop buffer)
+          (let ((shown (diff-review--file-buffer file)))
+            (unless (eq shown buffer)
+              (dolist (window (get-buffer-window-list buffer nil t))
+                (diff-review--show-quietly window shown))
+              (diff-review--drop buffer))
+            (diff-review--enter shown path)))))))
 
 (defun diff-review--open (i)
   "Show file I in the main window, at its first hunk, and sync the lists.
@@ -1372,9 +1413,7 @@ Returns its buffer.  The review buffer must be current."
   (setq diff-review--index i)
   (let* ((file (diff-review--file i))
          (path (plist-get file :path))
-         (buffer (cond ((equal (plist-get file :status) "D") (diff-review--blob-for file))
-                       (diff-review--head (diff-review--head-buffer file))
-                       (t (find-file-noselect (expand-file-name path diff-review--root))))))
+         (buffer (diff-review--file-buffer file)))
     (dolist (other (diff-review--file-buffers))   ; a file has one buffer in the review
       (when (and (not (eq other buffer))
                  (equal (buffer-local-value 'diff-review--file-path other) path))

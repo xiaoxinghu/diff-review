@@ -1172,13 +1172,25 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
         (with-current-buffer real              ; reread under the review, still a real file
           (should diff-review-file-mode)
           (should (equal (buffer-string) "a\nB\nc\nd\nE\nf\n")))
-        ;; A dirty file in the worktree shows the branch's blob instead.
-        (with-temp-file (expand-file-name "a.txt" wt) (insert "dirty\n"))
+        ;; Unsaved edits in the worktree's buffer: the branch's blob shows, the edits stay.
+        (with-current-buffer real (goto-char (point-max)) (insert "edit\n"))
         (with-current-buffer review (diff-review--open 1))
         (with-current-buffer (window-buffer)
           (should diff-review-file-mode)
           (should-not buffer-file-name)
           (should (equal (buffer-string) "a\nB\nc\nd\nE\nf")))   ; a blob, without its last newline
+        (should-not (buffer-local-value 'diff-review-file-mode real))
+        (should (buffer-modified-p real))
+        (with-current-buffer real (revert-buffer t t))
+        (with-current-buffer review (diff-review--open 1))
+        (should (eq (window-buffer) real))
+        ;; The file dirtied on disk: a rescan gives the window the blob instead.
+        (with-temp-file (expand-file-name "a.txt" wt) (insert "dirty\n"))
+        (with-current-buffer review (diff-review-refresh))
+        (with-current-buffer (window-buffer)
+          (should diff-review-file-mode)
+          (should-not buffer-file-name)
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\nf")))
         (should-not (buffer-local-value 'diff-review-file-mode real))
         ;; The same file, with its marks, from inside the worktree.
         (with-current-buffer review (diff-review--set-viewed (diff-review--file 0) t))
@@ -1236,6 +1248,12 @@ the worktree follows the tip on a rescan and goes on quit."
         (should buffer-read-only)
         (should (diff-review-test--same-file-p buffer-file-name (expand-file-name "a.txt" dir)))
         (should (equal (buffer-string) "a\nB\nc\nd\n")))
+      (with-current-buffer review (diff-review--open 0))   ; the next file: the same worktree, read-only
+      (with-current-buffer (window-buffer)
+        (should buffer-read-only)
+        (should (diff-review-test--same-file-p buffer-file-name (expand-file-name "src/b.txt" dir))))
+      (with-current-buffer review (diff-review--open 1))
+      (should (eq (window-buffer) file))
       ;; stale moves, by a commit in a worktree that then goes: still nobody has it.
       (let ((tmp (diff-review-test--worktree repo "tmp" "stale")))
         (diff-review-test--commit-in tmp "a.txt" "a\nB\nc\nd\nE\n" "stale two")
@@ -1256,8 +1274,15 @@ the worktree follows the tip on a rescan and goes on quit."
       (should-not (seq-some (lambda (p) (string-match-p "review/worktrees" p))
                             (diff-review-test--worktree-entries repo))))))
 
+(defun diff-review-test--dead-pid ()
+  "The pid of a process that has exited."
+  (let ((process (start-process "diff-review-test" nil "true")))
+    (while (process-live-p process) (sleep-for 0.02))
+    (process-id process)))
+
 (ert-deftest diff-review-test-leftover-worktree-is-pruned ()
-  "A throwaway worktree a killed Emacs left goes when the next review adds one."
+  "A throwaway worktree a killed Emacs left goes when the next review adds one;
+one a running Emacs holds stays."
   (diff-review-test--with-repo
     (diff-review-test--git "branch" "stale")
     (diff-review-test--git "commit" "-q" "-am" "three")
@@ -1271,8 +1296,14 @@ the worktree follows the tip on a rescan and goes on quit."
                                   repo))
            (new (expand-file-name (concat ".git/review/worktrees/" (diff-review--git "rev-parse" "HEAD~1"))
                                   repo)))
-      (diff-review--open 1)
-      (should (file-directory-p old))
+      (let ((dead (diff-review-test--dead-pid)))
+        (cl-letf (((symbol-function 'emacs-pid) (lambda () dead)))   ; an Emacs that is gone
+          (diff-review--open 1))
+        (should (file-directory-p old))
+        (should (equal (plist-get (seq-find (lambda (w) (diff-review-test--same-file-p (plist-get w :path) old))
+                                            (diff-review--worktrees repo))
+                                  :locked)
+                       (format "diff-review %d" dead))))
       (with-current-buffer review               ; Emacs dies: no close runs
         (remove-hook 'kill-buffer-hook #'diff-review--close t)
         (kill-buffer))
@@ -1284,7 +1315,12 @@ the worktree follows the tip on a rescan and goes on quit."
       (should (file-directory-p new))
       (let ((entries (diff-review-test--worktree-entries repo)))
         (should (seq-some (lambda (p) (diff-review-test--same-file-p p new)) entries))
-        (should-not (seq-some (lambda (p) (diff-review-test--same-file-p p old)) entries))))))
+        (should-not (seq-some (lambda (p) (diff-review-test--same-file-p p old)) entries)))
+      ;; Another review needing a throwaway leaves this Emacs's in place.
+      (diff-review-test--open repo "again.json" "HEAD~3" "stale")
+      (diff-review--open 1)
+      (should (file-directory-p old))
+      (should (file-directory-p new)))))
 
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here
