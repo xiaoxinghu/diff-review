@@ -1162,7 +1162,16 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
         (diff-review--check-tip (selected-window))
         (should (string-match-p "feature moved to [0-9a-f]\\{7\\}," (buffer-string)))
         (should (string-match-p "rescan" (buffer-string)))
-        (diff-review-refresh)
+        ;; Until the rescan the review is of the tip it scanned: the worktree has
+        ;; moved on, so the file comes from a throwaway of that tip, with its hunks.
+        (diff-review--open 0)
+        (with-current-buffer (window-buffer)
+          (should buffer-read-only)
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\n"))
+          (should (equal (mapcar (lambda (h) (plist-get h :line)) diff-review--hunks) '(5))))
+        (with-current-buffer review (diff-review-refresh))
+        (should (eq (window-buffer) real))        ; the worktree's file again
+        (set-buffer review)
         (should-not diff-review--moved)
         (should-not (string-match-p "moved to" (buffer-string)))
         (should (equal diff-review--tip (diff-review--git "rev-parse" "feature")))
@@ -1219,6 +1228,22 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
       (should (file-exists-p (expand-file-name ".git/review/feat/x.json" repo)))
       (should (equal diff-review--head "feat/x"))
       (should (equal diff-review--head-name "feat/x")))))
+
+(ert-deftest diff-review-test-file-absent-from-a-clean-checkout ()
+  "A file the matching worktree has not on disk, as a sparse checkout omits, is a blob."
+  (diff-review-test--with-repo
+    (let ((wt (diff-review-test--worktree repo "wt" "-b" "feature")))
+      (diff-review-test--commit-in wt "a.txt" "a\nB\nc\nd\nE\n" "feature one")
+      (let ((default-directory wt))
+        (diff-review-test--git "update-index" "--skip-worktree" "a.txt")
+        (delete-file "a.txt"))
+      (delete-other-windows)
+      (diff-review-branch "feature")
+      (diff-review--open 0)
+      (with-current-buffer (window-buffer)
+        (should diff-review-file-mode)
+        (should-not buffer-file-name)
+        (should (equal (buffer-string) "a\nB\nc\nd\nE"))))))
 
 (defun diff-review-test--worktree-entries (repo)
   "The paths `git worktree list' gives for REPO."
@@ -1279,8 +1304,10 @@ the worktree follows the tip on a rescan and goes on quit."
           (should diff-review-file-mode)
           (should buffer-read-only)
           (should (equal (buffer-string) "a\nB\nc\nd\nE\n"))))
-      (with-current-buffer review (diff-review-quit))
-      (should-not (buffer-live-p file))
+      (let ((other (find-file-noselect (expand-file-name "src/b.txt" dir))))   ; as xref would
+        (with-current-buffer review (diff-review-quit))
+        (should-not (buffer-live-p file))
+        (should-not (buffer-live-p other)))
       (should-not (file-directory-p dir))
       (should-not (seq-some (lambda (p) (string-match-p "review/worktrees" p))
                             (diff-review-test--worktree-entries repo))))))

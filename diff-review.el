@@ -339,12 +339,14 @@ Return a hash table of path to (ADDED . REMOVED)."
           (t (string< (car as) (car bs))))))
 
 (defun diff-review--range ()
-  "The revisions to give `git diff': the base, and the head if there is one."
-  (delq nil (list diff-review--base diff-review--head)))
+  "The revisions to give `git diff': the base, and the head's tip when set.
+The tip as scanned, not the branch: the files shown are the tip's, and
+the branch may have moved on since."
+  (delq nil (list diff-review--base diff-review--tip)))
 
 (defun diff-review--hashes (paths &optional rev)
-  "The blob hashes of the files at PATHS, at REV or the head, in one git call."
-  (setq rev (or rev diff-review--head))
+  "The blob hashes of the files at PATHS, at REV or the tip, in one git call."
+  (setq rev (or rev diff-review--tip))
   (cond
    ((null paths) nil)
    (rev
@@ -1226,8 +1228,10 @@ take: then BUFFER goes where `display-buffer' says."
   "A read-only buffer with PATH as it is at REV; DELETED when the file is gone.
 KEY identifies the content, a blob hash or a commit: the buffer is built
 once and reused while its KEY holds, so revisits cost no git call and no
-mode start, and its overlays are not emptied onto the first line."
-  (let ((buffer (get-buffer-create (format "*%s: %s*" (if deleted "deleted" rev) path))))
+mode start, and its overlays are not emptied onto the first line.  It is
+named for the head, so one buffer follows the branch."
+  (let ((buffer (get-buffer-create (format "*%s: %s*" (if deleted "deleted" diff-review--head-name)
+                                           path))))
     (unless (equal (buffer-local-value 'diff-review--blob buffer) key)
       (let ((contents (diff-review--git "show" (concat rev ":" path)))
             (root diff-review--root))
@@ -1247,7 +1251,7 @@ mode start, and its overlays are not emptied onto the first line."
   "The revision buffer of FILE: the head's version, the base's of a deleted one."
   (if (equal (plist-get file :status) "D")
       (diff-review--blob-buffer diff-review--base (plist-get file :path) (plist-get file :hash) t)
-    (diff-review--blob-buffer diff-review--head (plist-get file :path) (plist-get file :hash))))
+    (diff-review--blob-buffer diff-review--tip (plist-get file :path) (plist-get file :hash))))
 
 (defun diff-review--visit (file &optional read-only)
   "Visit FILE as `find-file-noselect' does, READ-ONLY when so: its buffer.
@@ -1291,9 +1295,14 @@ that is not one, a branch's review file in review/worktrees/..., stays."
                       (directory-file-name (plist-get worktree :path)))))
 
 (defun diff-review--remove-worktree ()
-  "Remove this review's throwaway worktree, which this Emacs added and locked."
+  "Remove this review's throwaway worktree, which this Emacs added and locked.
+Every buffer visiting a file in it goes first, one reached through xref
+too; its windows show what they did before."
   (when diff-review--worktree
     (let ((dir diff-review--worktree))
+      (dolist (buffer (buffer-list))
+        (when (and (buffer-file-name buffer) (file-in-directory-p (buffer-file-name buffer) dir))
+          (diff-review--leave buffer (lambda () (kill-buffer buffer)))))
       (when-let* ((worktree (seq-find (lambda (w) (equal (plist-get w :path) dir))
                                       (ignore-errors (diff-review--worktrees diff-review--root)))))
         (when (equal (plist-get worktree :locked) (diff-review--lock-reason))
@@ -1341,7 +1350,7 @@ review holds that."
                                 (diff-review--worktrees diff-review--root)))
          (clean (seq-find (lambda (w)
                             (let ((dir (plist-get w :path)))
-                              (and (file-directory-p dir)
+                              (and (file-exists-p (expand-file-name path dir))   ; a sparse checkout omits
                                    (equal (ignore-errors
                                             (diff-review--git-at dir "status" "--porcelain" "--" path))
                                           "")
