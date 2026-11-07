@@ -313,5 +313,5 @@ gives it back.
 `make check` byte-compiles without warnings, runs checkdoc and the ERT tests.
 It reads no Emacs config: the first run fetches magit-section and magit from
 MELPA into `.deps/` (`make deps`), and `rm -rf .deps` starts over.
-`diff-review.el` compiles and its tests run with magit off the load path. `EMACS=...` picks the
-Emacs.
+`diff-review.el` compiles and its tests run with magit off the load path.
+`EMACS=...` picks the Emacs.
