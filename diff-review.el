@@ -1381,21 +1381,27 @@ file clean, on disk and in any buffer visiting it, gives the file itself,
 so xref, eglot and project.el see an ordinary file in its tree.  Without
 one the review's throwaway worktree of the tip is added, and is such a
 worktree, its files read-only.  A dirty file, there too, would not line
-up with the hunks, so then it is the revision buffer; so is every file
-when another review holds the commit's throwaway."
+up with the hunks, so then it is the revision buffer; so is a symlink,
+whose blob is the link, a file another open review shows, and every
+file when another review holds the commit's throwaway."
   (let* ((path (plist-get file :path))
+         (review (current-buffer))
          (worktrees (seq-filter (lambda (w) (and (equal (plist-get w :head) diff-review--tip)
                                                  (or (not (diff-review--throwaway-p w))
                                                      (equal (plist-get w :path) diff-review--worktree))))
                                 (diff-review--worktrees diff-review--root)))
          (clean-p (lambda (w)
-                    (let ((dir (plist-get w :path)))
-                      (and (file-exists-p (expand-file-name path dir))   ; a sparse checkout omits
+                    (let* ((dir (plist-get w :path))
+                           (name (expand-file-name path dir))
+                           (buffer (find-buffer-visiting name))
+                           (owner (and buffer (buffer-local-value 'diff-review--review buffer))))
+                      (and (file-exists-p name)   ; a sparse checkout omits
+                           (not (file-symlink-p name))
                            (equal (ignore-errors
                                     (diff-review--git-at dir "status" "--porcelain" "--" path))
                                   "")
-                           (not (buffer-modified-p
-                                 (find-buffer-visiting (expand-file-name path dir))))))))
+                           (not (and buffer (buffer-modified-p buffer)))
+                           (or (null owner) (eq owner review) (not (buffer-live-p owner)))))))
          (clean (or (seq-find clean-p worktrees)
                     (and (null worktrees)
                          (when-let* ((added (diff-review--throwaway)))

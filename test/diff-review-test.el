@@ -1272,6 +1272,43 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
       (diff-review-quit)
       (should (file-exists-p (expand-file-name "note.txt" dir))))))
 
+(ert-deftest diff-review-test-symlink-is-a-revision-buffer ()
+  "A tracked symlink shows its blob, the link, not the file it points at."
+  (diff-review-test--with-repo
+    (let ((wt (diff-review-test--worktree repo "wt" "-b" "feature")))
+      (let ((default-directory wt))
+        (make-symbolic-link "a.txt" "link")
+        (diff-review-test--git "add" "link")
+        (diff-review-test--git "commit" "-q" "-m" "a link"))
+      (delete-other-windows)
+      (diff-review-branch "feature")
+      (should (equal (plist-get (diff-review--file 0) :path) "link"))
+      (diff-review--open 0)
+      (with-current-buffer (window-buffer)
+        (should diff-review-file-mode)
+        (should-not buffer-file-name)
+        (should (equal (buffer-string) "a.txt"))))))
+
+(ert-deftest diff-review-test-real-file-stays-with-its-review ()
+  "Two reviews at one checked-out commit: the second does not take the first's buffer."
+  (diff-review-test--with-repo
+    (diff-review-test--git "commit" "-q" "-am" "three")   ; main clean, at HEAD
+    (delete-other-windows)
+    (let ((one (diff-review-test--open repo "one.json" "HEAD^" "HEAD")))
+      (diff-review--open 1)
+      (let ((real (window-buffer))
+            (two (diff-review-test--open repo "two.json" "HEAD~2" "HEAD")))
+        (should (buffer-file-name real))
+        (diff-review--open 1)
+        (with-current-buffer (window-buffer)
+          (should-not (eq (current-buffer) real))
+          (should-not buffer-file-name)
+          (should (eq diff-review--review two)))
+        (should (eq (buffer-local-value 'diff-review--review real) one))
+        (with-current-buffer one (diff-review-quit))
+        (with-current-buffer two (diff-review--open 1))   ; free now: the real file
+        (should (eq (window-buffer) real))))))
+
 (ert-deftest diff-review-test-revision-buffers-are-the-reviews-own ()
   "Two reviews of the same head name and path keep separate revision buffers."
   (diff-review-test--with-repo
