@@ -15,8 +15,10 @@
 ;; request page does: the counts, then the changed files as a foldable
 ;; tree.  Picking a file shows the real file in its own major mode, so
 ;; every editing command, `xref' and the language server work.  A review
-;; with a head revision compares two commits instead, and shows the files
-;; read-only, as they are at the head.  Overlays add what a diff shows:
+;; with a head revision compares two commits instead; its files are the
+;; head's, in a worktree that has the head checked out, else in a
+;; throwaway worktree of it under the git directory, read-only, so they
+;; are real files in a real tree too.  Overlays add what a diff shows:
 ;; removed lines inline above where they were, a tint on added lines, and
 ;; a focus mode that folds the unchanged lines.
 ;;
@@ -34,9 +36,11 @@
 ;; it lives.  It records what git cannot derive: the base, the viewed
 ;; marks with the blob hash each file had when it was ticked, so a mark
 ;; clears when the file changes again.  Everything else comes from git
-;; when the file is visited.  Nothing here knows about branches, tasks or
-;; worktrees beyond what git reports; whoever creates the file decides
-;; where it goes, see `diff-review-find-file'.
+;; when the file is visited.  Whoever creates the file decides where it
+;; goes, see `diff-review-find-file'; `diff-review-branch' puts the review
+;; of a branch under the repository's common git directory, where every
+;; worktree finds it, and names the branch as the head, so one review
+;; follows the branch through its commits.
 ;;
 ;;   {"format": "diff-review/1",
 ;;    "root": "/path/to/worktree/",   optional: the file's repository
@@ -188,6 +192,9 @@ Without a background of its own, it takes `diff-review-comment's.")
 (defvar-local diff-review--base-name nil "The revision the file names.")
 (defvar-local diff-review--head nil "The revision under review, or nil for the worktree.")
 (defvar-local diff-review--head-name nil "The branch under review, or the head revision.")
+(defvar-local diff-review--tip nil "Full SHA the head named at the last scan, or nil for the worktree.")
+(defvar-local diff-review--moved nil "Full SHA the head has moved to since the last scan, or nil.")
+(defvar-local diff-review--worktree nil "The throwaway worktree of the head, once added.")
 (defvar-local diff-review--files nil "Vector of file plists, in tree order.")
 (defvar-local diff-review--index nil "Index of the file shown, or nil for none.")
 (defvar-local diff-review--viewed nil "Hash table of path to the blob hash it was viewed at.")
@@ -226,13 +233,17 @@ Without a background of its own, it takes `diff-review-comment's.")
 
 ;;;; Git
 
-(defun diff-review--git (&rest args)
-  "Run git with ARGS at the root and return its output without trailing newlines."
-  (let ((default-directory diff-review--root))
+(defun diff-review--git-at (directory &rest args)
+  "Run git with ARGS in DIRECTORY and return its output without trailing newlines."
+  (let ((default-directory directory))
     (with-temp-buffer
       (unless (zerop (apply #'process-file "git" nil t nil args))
         (error "Git %s: %s" (string-join args " ") (string-trim (buffer-string))))
       (string-trim-right (buffer-string) "\n+"))))
+
+(defun diff-review--git (&rest args)
+  "Run git with ARGS at the root and return its output without trailing newlines."
+  (apply #'diff-review--git-at diff-review--root args))
 
 (defun diff-review--git-maybe (&rest args)
   "Run git with ARGS in `default-directory': its output, or nil when it fails."
@@ -245,6 +256,29 @@ Without a background of its own, it takes `diff-review-comment's.")
   (let ((default-directory directory))
     (when-let* ((top (diff-review--git-maybe "rev-parse" "--show-toplevel")))
       (file-name-as-directory top))))
+
+(defun diff-review--common-dir (root)
+  "The git directory the worktrees of the repository at ROOT share."
+  (file-name-as-directory
+   (file-truename
+    (expand-file-name (diff-review--git-at root "rev-parse" "--git-common-dir") root))))
+
+(defun diff-review--worktrees (root)
+  "The worktrees of the repository at ROOT, the main one first.
+Plists with :path, :head and :branch; :branch is nil at a detached HEAD,
+and a bare one has no :head."
+  (mapcar (lambda (record)
+            (let (plist)
+              (dolist (line (split-string record "\n" t))
+                (pcase (and (string-match "\\`\\([a-z]+\\)\\(?: \\(.*\\)\\)?\\'" line)
+                            (list (match-string 1 line) (match-string 2 line)))
+                  (`("worktree" ,path)
+                   (setq plist (plist-put plist :path (file-name-as-directory path))))
+                  (`("HEAD" ,sha) (setq plist (plist-put plist :head sha)))
+                  (`("branch" ,ref)
+                   (setq plist (plist-put plist :branch (string-remove-prefix "refs/heads/" ref))))))
+              plist))
+          (split-string (diff-review--git-at root "worktree" "list" "--porcelain") "\n\n" t)))
 
 (defun diff-review-default-branch ()
   "The default branch of the repository at `default-directory'.
@@ -336,6 +370,7 @@ Return a hash table of path to (ADDED . REMOVED)."
           (error (user-error "No merge base with base %S: set \"base\" in the review \
 file, or `diff-review-default-base' for new reviews (%s)"
                              diff-review--base-name (error-message-string err)))))
+  (diff-review--follow-tip)
   (let* ((shown (and diff-review--index   ; keeps its place by path: the index may move
                      (< diff-review--index (length diff-review--files))
                      (plist-get (diff-review--file) :path)))
@@ -366,6 +401,18 @@ file, or `diff-review-default-base' for new reviews (%s)"
                                :hash (cdr (assoc path hashes))))))
                    entries)))
     (setq diff-review--index (and shown (diff-review--file-index shown)))))
+
+(defun diff-review--follow-tip ()
+  "Note the commit the head names now; the throwaway worktree moves to it.
+A review of a branch follows the branch: its files are the tip's."
+  (let ((tip (and diff-review--head
+                  (diff-review--git "rev-parse" "--verify"
+                                    (concat diff-review--head "^{commit}")))))
+    (when (and diff-review--worktree (not (equal tip diff-review--tip))
+               (file-directory-p diff-review--worktree))
+      (diff-review--git-at diff-review--worktree "checkout" "--quiet" "--detach" tip))
+    (setq diff-review--tip tip
+          diff-review--moved nil)))
 
 (defun diff-review--commented-paths (listed)
   "The commented paths not among LISTED that the head, or the worktree, has.
@@ -592,7 +639,13 @@ then the thread is outdated, as a pull request page says."
              (diff-review--counts (diff-review--sum diff-review--files :added)
                                   (diff-review--sum diff-review--files :removed)))
      (if (zerop n) ""
-       (format "  %d comment%s, %d open" n (if (= n 1) "" "s") open)))))
+       (format "  %d comment%s, %d open" n (if (= n 1) "" "s") open))
+     (if (null diff-review--moved) ""
+       (concat "  "
+               (propertize (format "%s moved to %s," diff-review--head-name
+                                   (substring diff-review--moved 0 7))
+                           'face 'warning)
+               " " (diff-review--key-hints '((diff-review-refresh . "rescan"))))))))
 
 (defun diff-review--comment-mark (path)
   "The mark a list line carries for PATH's open threads, or an empty string."
@@ -808,7 +861,27 @@ The review buffer must be current."
   (diff-review--read)
   (diff-review--scan)
   (diff-review--render-all)
-  (diff-review--redecorate-files))   ; an agent may have written comments
+  (diff-review--refresh-files))
+
+(defun diff-review--check-tip (window-or-frame)
+  "Note when the head of the review shown in WINDOW-OR-FRAME has moved on.
+On the review buffer's window hooks: a window coming to show the overview,
+or selected with it.  A commit on the branch changes no file Emacs
+watches, so this is where the review notices one; the notice stays until
+the next rescan."
+  (let ((window (if (framep window-or-frame)
+                    (frame-selected-window window-or-frame)
+                  window-or-frame)))
+    (when (window-live-p window)
+      (with-current-buffer (window-buffer window)
+        (when (and (derived-mode-p 'diff-review-mode) diff-review--head)
+          (let* ((tip (ignore-errors
+                        (diff-review--git "rev-parse" "--verify"
+                                          (concat diff-review--head "^{commit}"))))
+                 (moved (and tip (not (equal tip diff-review--tip)) tip)))
+            (unless (equal moved diff-review--moved)
+              (setq diff-review--moved moved)
+              (diff-review--render-all))))))))
 
 (defun diff-review--revert (&rest _)
   "Reload the review from its file, as `revert-buffer-function'."
@@ -934,6 +1007,9 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
         diff-review--inline-removed diff-review-inline-removed)
   (add-hook 'write-contents-functions #'diff-review--write nil t)
   (add-hook 'kill-buffer-hook #'diff-review--close nil t)
+  ;; Local: a commit on the branch is noticed when the overview is shown or selected.
+  (add-hook 'window-selection-change-functions #'diff-review--check-tip nil t)
+  (add-hook 'window-buffer-change-functions #'diff-review--check-tip nil t)
   ;; Global, so it lives only while there is a review: see `diff-review--close'.
   (add-hook 'window-buffer-change-functions #'diff-review--follow)
   (display-line-numbers-mode -1)
@@ -962,18 +1038,15 @@ dedicated one."
 (defun diff-review--close ()
   "End the review being killed: its files' decorations and its sidebar.
 Windows showing the review or its files go back to what they showed
-before it; buffers showing a revision of a file are killed.  The last
-review to go takes `diff-review--follow' off the window hook."
+before it; buffers showing a revision of a file are killed, as is the
+throwaway worktree.  The last review to go takes `diff-review--follow'
+off the window hook."
   (let ((review (current-buffer)))
-    (dolist (buffer (diff-review--file-buffers))
-      (with-current-buffer buffer
-        (diff-review--leave buffer (lambda ()
-                                     (if buffer-file-name
-                                         (diff-review-file-mode -1)
-                                       (kill-buffer))))))
+    (mapc #'diff-review--drop (diff-review--file-buffers))
     (diff-review--leave review #'ignore)
     (when (buffer-live-p diff-review--sidebar)
       (kill-buffer diff-review--sidebar))
+    (diff-review--remove-worktree)
     (unless (seq-some (lambda (buffer)
                         (and (not (eq buffer review))
                              (provided-mode-derived-p (buffer-local-value 'major-mode buffer)
@@ -1165,24 +1238,148 @@ mode start, and its overlays are not emptied onto the first line."
             (read-only-mode 1)))))
     buffer))
 
+(defun diff-review--blob-for (file)
+  "The revision buffer of FILE: the head's version, the base's of a deleted one."
+  (if (equal (plist-get file :status) "D")
+      (diff-review--blob-buffer diff-review--base (plist-get file :path) (plist-get file :hash) t)
+    (diff-review--blob-buffer diff-review--head (plist-get file :path) (plist-get file :hash))))
+
+(defun diff-review--visit (file &optional read-only)
+  "Visit FILE as `find-file-noselect' does, READ-ONLY when so: its buffer.
+An unmodified buffer the file changed under is reread without a question:
+a commit on the branch under review moves its worktree's files, and the
+review shows what git has."
+  (let ((buffer (find-buffer-visiting file)))
+    (when (and buffer (not (buffer-modified-p buffer))
+               (not (verify-visited-file-modtime buffer)))
+      (with-current-buffer buffer (ignore-errors (revert-buffer t t))))
+    (setq buffer (find-file-noselect file))
+    (when read-only (with-current-buffer buffer (setq buffer-read-only t)))
+    buffer))
+
+(defun diff-review--review-dir ()
+  "The review folder under the repository's common git directory."
+  (expand-file-name "review/" (diff-review--common-dir diff-review--root)))
+
+(defun diff-review--remove-worktree-at (dir)
+  "Remove the throwaway worktree at DIR with its files, however it was left."
+  (condition-case nil
+      (diff-review--git "worktree" "remove" "--force" (directory-file-name dir))
+    (error (ignore-errors (delete-directory dir t)))))
+
+(defun diff-review--remove-worktree ()
+  "Remove this review's throwaway worktree, unless another open review shares it."
+  (when diff-review--worktree
+    (let ((review (current-buffer)) (dir diff-review--worktree))
+      (unless (seq-some (lambda (b) (and (not (eq b review))
+                                         (equal (buffer-local-value 'diff-review--worktree b) dir)))
+                        (buffer-list))
+        (when (file-directory-p dir) (diff-review--remove-worktree-at dir))
+        (ignore-errors (diff-review--git "worktree" "prune"))))
+    (setq diff-review--worktree nil)))
+
+(defun diff-review--throwaway ()
+  "This review's throwaway worktree of the head, added on first use.
+It is review/worktrees/<hash> under the common git directory, named for
+the commit it was added at, and follows the head on a rescan.  Ignored
+files, dependencies among them, are not in it.  Leftovers of reviews no
+longer open, a killed Emacs's, go first, and git's record of a directory
+that is gone is pruned.  The review buffer must be current."
+  (unless (and diff-review--worktree (file-directory-p diff-review--worktree))
+    (let* ((dir (expand-file-name "worktrees/" (diff-review--review-dir)))
+           (worktree (file-name-as-directory (expand-file-name diff-review--tip dir)))
+           (live (mapcar (lambda (b) (buffer-local-value 'diff-review--worktree b))
+                         (buffer-list))))
+      (dolist (old (and (file-directory-p dir) (directory-files dir t "\\`[^.]")))
+        (unless (member (file-name-as-directory old) live)
+          (diff-review--remove-worktree-at old)))
+      (diff-review--git "worktree" "prune")
+      (unless (file-directory-p worktree)   ; another open review's, at the same commit
+        (make-directory dir t)
+        (diff-review--git "worktree" "add" "--quiet" "--detach"
+                          (directory-file-name worktree) diff-review--tip))
+      (setq diff-review--worktree worktree)))
+  diff-review--worktree)
+
+(defun diff-review--head-buffer (file)
+  "A buffer with FILE as it is at the head: a real file where there is one.
+A worktree that has the head checked out, the main one included, with the
+file clean gives the file itself, so xref, eglot and project.el see an
+ordinary file in its tree; a dirty one would not line up with the hunks,
+so then it is the revision buffer.  Without such a worktree the file is
+visited, read-only, in the review's throwaway worktree of the head."
+  (let* ((path (plist-get file :path))
+         (worktrees (seq-filter (lambda (w) (equal (plist-get w :head) diff-review--tip))
+                                (diff-review--worktrees diff-review--root)))
+         (clean (seq-find (lambda (w)
+                            (and (file-directory-p (plist-get w :path))
+                                 (equal (ignore-errors
+                                          (diff-review--git-at (plist-get w :path)
+                                                               "status" "--porcelain" "--" path))
+                                        "")))
+                          worktrees)))
+    (cond (clean (diff-review--visit (expand-file-name path (plist-get clean :path))))
+          (worktrees (diff-review--blob-for file))
+          (t (diff-review--visit (expand-file-name path (diff-review--throwaway)) t)))))
+
+(defun diff-review--enter (buffer path)
+  "Put BUFFER, showing PATH, under this review: its hunks parsed, decorated.
+The review buffer must be current."
+  (let ((review (current-buffer)))
+    (with-current-buffer buffer
+      (setq diff-review--review review
+            diff-review--file-path path)
+      (diff-review-file-mode 1))))
+
+(defun diff-review--drop (buffer)
+  "Take file BUFFER out of the review; its windows show what they did before.
+A real file stays, as the user's; a revision buffer, or a file of the
+throwaway worktree, is killed.  The review buffer must be current."
+  (let ((worktree diff-review--worktree))
+    (with-current-buffer buffer
+      (diff-review--leave
+       buffer
+       (lambda ()
+         (if (and buffer-file-name
+                  (not (and worktree (file-in-directory-p buffer-file-name worktree))))
+             (diff-review-file-mode -1)
+           (kill-buffer)))))))
+
+(defun diff-review--refresh-files ()
+  "Bring this review's open files up to date after a scan.
+A file the review no longer has leaves it.  The others follow the head: a
+real file changed under an unmodified buffer is reread, a revision buffer
+rebuilt, and the hunks are parsed again.  The review buffer must be current."
+  (dolist (buffer (diff-review--file-buffers))
+    (let* ((path (buffer-local-value 'diff-review--file-path buffer))
+           (file (and-let* ((i (diff-review--file-index path))) (diff-review--file i))))
+      (cond ((null file) (diff-review--drop buffer))
+            ((buffer-file-name buffer)
+             (diff-review--visit (buffer-file-name buffer)
+                                 (buffer-local-value 'buffer-read-only buffer))
+             (diff-review--enter buffer path))
+            ((eq (buffer-local-value 'diff-review--deleted buffer)   ; the same kind of blob
+                 (equal (plist-get file :status) "D"))
+             (diff-review--blob-for file)
+             (diff-review--enter buffer path))
+            (t (diff-review--drop buffer))))))
+
 (defun diff-review--open (i)
   "Show file I in the main window, at its first hunk, and sync the lists.
 Returns its buffer.  The review buffer must be current."
   (unless (< -1 i (length diff-review--files))
     (user-error "The review has no files"))
   (setq diff-review--index i)
-  (let* ((review (current-buffer))
-         (file (diff-review--file i))
+  (let* ((file (diff-review--file i))
          (path (plist-get file :path))
-         (buffer (cond ((equal (plist-get file :status) "D")
-                        (diff-review--blob-buffer diff-review--base path (plist-get file :hash) t))
-                       (diff-review--head
-                        (diff-review--blob-buffer diff-review--head path (plist-get file :hash)))
+         (buffer (cond ((equal (plist-get file :status) "D") (diff-review--blob-for file))
+                       (diff-review--head (diff-review--head-buffer file))
                        (t (find-file-noselect (expand-file-name path diff-review--root))))))
-    (with-current-buffer buffer
-      (setq diff-review--review review
-            diff-review--file-path path)
-      (diff-review-file-mode 1))
+    (dolist (other (diff-review--file-buffers))   ; a file has one buffer in the review
+      (when (and (not (eq other buffer))
+                 (equal (buffer-local-value 'diff-review--file-path other) path))
+        (diff-review--drop other)))
+    (diff-review--enter buffer path)
     (diff-review--render-all)
     (diff-review--show-in-main buffer)
     (with-current-buffer buffer          ; the caller may be in the review buffer
@@ -1984,6 +2181,43 @@ caller's choice."
       (json-pretty-print-buffer)
       (insert "\n")))
   (find-file file))
+
+(defun diff-review--root-here ()
+  "The root of the repository `default-directory' is in, or an error."
+  (or (diff-review--toplevel default-directory)
+      (user-error "Not in a git repository")))
+
+(defun diff-review--branch-file (root branch)
+  "The review file of BRANCH in the repository at ROOT; a slash makes a folder."
+  (expand-file-name (concat branch ".json")
+                    (expand-file-name "review/" (diff-review--common-dir root))))
+
+(defun diff-review--read-branch ()
+  "Read a branch to review: one another worktree has checked out, or any typed."
+  (let* ((root (diff-review--root-here))
+         (here (file-truename root))
+         (branches (delq nil (mapcar (lambda (w)
+                                       (and (not (equal (file-truename (plist-get w :path)) here))
+                                            (plist-get w :branch)))
+                                     (diff-review--worktrees root))))
+         (branch (completing-read "Review branch: " branches)))
+    (when (string-empty-p branch) (user-error "No branch to review"))
+    branch))
+
+;;;###autoload
+(defun diff-review-branch (branch)
+  "Review BRANCH against `diff-review-default-base', from this repository.
+Interactively, pick among the branches the repository's other worktrees
+have checked out, or type any.  The review file is review/BRANCH.json
+under the common git directory, which every worktree shares and git never
+commits, so main's clone and the branch's worktree open the same one: the
+branch's pull request, kept through its commits.  The branch is the head,
+so the review follows it, and its files are its commits', not a
+worktree's uncommitted edits, visited in a worktree that has the branch
+checked out."
+  (interactive (list (diff-review--read-branch)))
+  (let ((root (diff-review--root-here)))
+    (diff-review-find-file (diff-review--branch-file root branch) root nil branch)))
 
 (provide 'diff-review)
 ;;; diff-review.el ends here

@@ -46,12 +46,32 @@ The repository has two commits and a dirty worktree touching two files."
        (dolist (buffer (buffer-list))
          (when (or (buffer-local-value 'diff-review--review buffer)
                    (derived-mode-p 'diff-review-mode)
-                   (and (buffer-file-name buffer)
-                        (string-prefix-p repo (buffer-file-name buffer))))
+                   (and (buffer-file-name buffer)   ; the repo's files, and its worktrees'
+                        (string-prefix-p (directory-file-name (file-truename repo))
+                                         (file-truename (buffer-file-name buffer)))))
            (kill-buffer buffer)))
        (delete-other-windows)
        (switch-to-buffer "*scratch*")
-       (delete-directory repo t))))
+       (delete-directory repo t)
+       (dolist (dir (file-expand-wildcards (concat (directory-file-name repo) "-*") t))
+         (delete-directory dir t)))))
+
+(defun diff-review-test--worktree (repo name &rest args)
+  "Add a worktree of REPO beside it, NAME in its folder's name, with ARGS; its path."
+  (let ((dir (file-name-as-directory (concat (directory-file-name repo) "-" name))))
+    (apply #'diff-review-test--git "worktree" "add" "-q" dir args)
+    dir))
+
+(defun diff-review-test--commit-in (dir path text message)
+  "Write TEXT to PATH in worktree DIR and commit it there as MESSAGE."
+  (let ((default-directory dir))
+    (diff-review-test--write path text)
+    (diff-review-test--git "add" path)
+    (diff-review-test--git "commit" "-q" "-m" message)))
+
+(defun diff-review-test--same-file-p (a b)
+  "Whether paths A and B name one file, through symlinks."
+  (equal (directory-file-name (file-truename a)) (directory-file-name (file-truename b))))
 
 (defun diff-review-test--open (repo &optional name base head)
   "Visit review NAME in REPO in the selected window, and settle the sidebar."
@@ -259,14 +279,14 @@ The repository has two commits and a dirty worktree touching two files."
 (ert-deftest diff-review-test-hook-lives-with-the-reviews ()
   (diff-review-test--with-repo
     (delete-other-windows)
-    (should-not (memq #'diff-review--follow window-buffer-change-functions))
+    (should-not (memq #'diff-review--follow (default-value 'window-buffer-change-functions)))
     (let ((one (diff-review-test--open repo))
           (two (diff-review-test--open repo "head.json" "HEAD^" "HEAD")))
-      (should (memq #'diff-review--follow window-buffer-change-functions))
+      (should (memq #'diff-review--follow (default-value 'window-buffer-change-functions)))
       (with-current-buffer one (diff-review-quit))
-      (should (memq #'diff-review--follow window-buffer-change-functions))
+      (should (memq #'diff-review--follow (default-value 'window-buffer-change-functions)))
       (with-current-buffer two (diff-review-quit))
-      (should-not (memq #'diff-review--follow window-buffer-change-functions)))))
+      (should-not (memq #'diff-review--follow (default-value 'window-buffer-change-functions))))))
 
 (ert-deftest diff-review-test-dedicated-window-stays-dedicated ()
   "The review's own window keeps its dedication through the files and after."
@@ -1108,6 +1128,163 @@ Redrawing after a write keeps each file's threads in that file."
       (should (funcall hidden 10))
       (should-not (funcall hidden 20))
       (should (funcall hidden 28)))))
+
+;;;; A branch's review
+
+(ert-deftest diff-review-test-branch-review-follows-the-branch ()
+  "From main's clone the branch's review is under the common git dir, its
+files the worktree's own; a commit on the branch is noticed, and a rescan follows it."
+  (diff-review-test--with-repo
+    (let ((wt (diff-review-test--worktree repo "wt" "-b" "feature")))
+      (diff-review-test--commit-in wt "a.txt" "a\nB\nc\nd\nE\n" "feature one")
+      (delete-other-windows)
+      (diff-review-branch "feature")
+      (diff-review--follow)
+      (let ((review (current-buffer)) real)
+        (should (diff-review-test--same-file-p
+                 buffer-file-name (expand-file-name ".git/review/feature.json" repo)))
+        (should (equal diff-review--head "feature"))
+        (should (equal (mapcar (lambda (f) (plist-get f :path)) diff-review--files) '("a.txt")))
+        (should (equal diff-review--tip (diff-review--git "rev-parse" "feature")))
+        ;; The file is the worktree's: a real file in its tree, for xref and eglot.
+        (diff-review--open 0)
+        (setq real (window-buffer))
+        (with-current-buffer real
+          (should diff-review-file-mode)
+          (should-not buffer-read-only)
+          (should (diff-review-test--same-file-p buffer-file-name (expand-file-name "a.txt" wt))))
+        (with-current-buffer review (diff-review--set-viewed (diff-review--file 0) t))
+        ;; The branch moves: the overview says so when shown, and a rescan follows.
+        (diff-review-test--commit-in wt "a.txt" "a\nB\nc\nd\nE\nf\n" "feature two")
+        (diff-review-test--commit-in wt "src/b.txt" "w\n" "feature three")
+        (diff-review-overview)
+        (should-not (string-match-p "moved to" (buffer-string)))
+        (diff-review--check-tip (selected-window))
+        (should (string-match-p "feature moved to [0-9a-f]\\{7\\}," (buffer-string)))
+        (should (string-match-p "rescan" (buffer-string)))
+        (diff-review-refresh)
+        (should-not diff-review--moved)
+        (should-not (string-match-p "moved to" (buffer-string)))
+        (should (equal diff-review--tip (diff-review--git "rev-parse" "feature")))
+        (should (equal (mapcar (lambda (f) (plist-get f :path)) diff-review--files)
+                       '("src/b.txt" "a.txt")))
+        (should-not (diff-review--viewed-p (diff-review--file 1)))   ; a.txt changed again
+        (with-current-buffer real              ; reread under the review, still a real file
+          (should diff-review-file-mode)
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\nf\n")))
+        ;; A dirty file in the worktree shows the branch's blob instead.
+        (with-temp-file (expand-file-name "a.txt" wt) (insert "dirty\n"))
+        (with-current-buffer review (diff-review--open 1))
+        (with-current-buffer (window-buffer)
+          (should diff-review-file-mode)
+          (should-not buffer-file-name)
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\nf")))   ; a blob, without its last newline
+        (should-not (buffer-local-value 'diff-review-file-mode real))
+        ;; The same file, with its marks, from inside the worktree.
+        (with-current-buffer review (diff-review--set-viewed (diff-review--file 0) t))
+        (let ((file buffer-file-name))
+          (kill-buffer review)
+          (let ((default-directory wt))
+            (diff-review-branch "feature"))
+          (should (diff-review-test--same-file-p buffer-file-name file))
+          (should (diff-review--viewed-p (diff-review--file 0)))
+          (should-not (diff-review--viewed-p (diff-review--file 1))))))))
+
+(ert-deftest diff-review-test-branch-file-and-candidates ()
+  "A slash in the branch makes folders; the picker offers the other worktrees' branches."
+  (diff-review-test--with-repo
+    (let ((wt (diff-review-test--worktree repo "wt" "-b" "feat/x")) seen)
+      (should (diff-review-test--same-file-p (diff-review--branch-file repo "feat/x")
+                                             (expand-file-name ".git/review/feat/x.json" repo)))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _) (setq seen collection) (car collection))))
+        (should (equal (diff-review--read-branch) "feat/x"))
+        (should (equal seen '("feat/x")))
+        (let ((default-directory wt))
+          (should (equal (diff-review--read-branch) "main"))))
+      (delete-other-windows)
+      (diff-review-branch "feat/x")
+      (should (file-exists-p (expand-file-name ".git/review/feat/x.json" repo)))
+      (should (equal diff-review--head "feat/x"))
+      (should (equal diff-review--head-name "feat/x")))))
+
+(defun diff-review-test--worktree-entries (repo)
+  "The paths `git worktree list' gives for REPO."
+  (let ((default-directory repo))
+    (mapcar (lambda (w) (plist-get w :path)) (diff-review--worktrees repo))))
+
+(ert-deftest diff-review-test-throwaway-worktree ()
+  "Commits no worktree has are checked out under review/worktrees, read-only;
+the worktree follows the tip on a rescan and goes on quit."
+  (diff-review-test--with-repo
+    (diff-review-test--git "branch" "stale")               ; at two
+    (diff-review-test--git "commit" "-q" "-am" "three")    ; main moves on
+    (delete-other-windows)
+    (diff-review-test--open repo "stale.json" "HEAD~2" "stale")
+    (let* ((review (current-buffer))
+           (hash (diff-review--git "rev-parse" "stale"))
+           (dir (expand-file-name (concat ".git/review/worktrees/" hash) repo))
+           file)
+      (should-not (file-directory-p dir))
+      (diff-review--open 1)                                 ; a.txt, after src/b.txt
+      (setq file (window-buffer))
+      (should (diff-review-test--same-file-p (buffer-local-value 'diff-review--worktree review) dir))
+      (should (seq-some (lambda (p) (diff-review-test--same-file-p p dir))
+                        (diff-review-test--worktree-entries repo)))
+      (with-current-buffer file
+        (should diff-review-file-mode)
+        (should buffer-read-only)
+        (should (diff-review-test--same-file-p buffer-file-name (expand-file-name "a.txt" dir)))
+        (should (equal (buffer-string) "a\nB\nc\nd\n")))
+      ;; stale moves, by a commit in a worktree that then goes: still nobody has it.
+      (let ((tmp (diff-review-test--worktree repo "tmp" "stale")))
+        (diff-review-test--commit-in tmp "a.txt" "a\nB\nc\nd\nE\n" "stale two")
+        (diff-review-test--git "worktree" "remove" tmp))
+      (with-current-buffer review (diff-review-refresh))
+      (let ((new (with-current-buffer review (diff-review--git "rev-parse" "stale"))))
+        (should-not (equal new hash))
+        (should (equal (buffer-local-value 'diff-review--tip review) new))
+        (should (equal (diff-review--git-at dir "rev-parse" "HEAD") new))
+        (should (eq (window-buffer) file))
+        (with-current-buffer file
+          (should diff-review-file-mode)
+          (should buffer-read-only)
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\n"))))
+      (with-current-buffer review (diff-review-quit))
+      (should-not (buffer-live-p file))
+      (should-not (file-directory-p dir))
+      (should-not (seq-some (lambda (p) (string-match-p "review/worktrees" p))
+                            (diff-review-test--worktree-entries repo))))))
+
+(ert-deftest diff-review-test-leftover-worktree-is-pruned ()
+  "A throwaway worktree a killed Emacs left goes when the next review adds one."
+  (diff-review-test--with-repo
+    (diff-review-test--git "branch" "stale")
+    (diff-review-test--git "commit" "-q" "-am" "three")
+    (diff-review-test--write "c.txt" "c\n")
+    (diff-review-test--git "add" "c.txt")
+    (diff-review-test--git "commit" "-q" "-m" "four")
+    (delete-other-windows)
+    (diff-review-test--open repo "stale.json" "HEAD~3" "stale")
+    (let* ((review (current-buffer))
+           (old (expand-file-name (concat ".git/review/worktrees/" (diff-review--git "rev-parse" "stale"))
+                                  repo))
+           (new (expand-file-name (concat ".git/review/worktrees/" (diff-review--git "rev-parse" "HEAD~1"))
+                                  repo)))
+      (diff-review--open 1)
+      (should (file-directory-p old))
+      (with-current-buffer review               ; Emacs dies: no close runs
+        (remove-hook 'kill-buffer-hook #'diff-review--close t)
+        (kill-buffer))
+      (remove-hook 'window-buffer-change-functions #'diff-review--follow)
+      (should (file-directory-p old))
+      (diff-review-test--open repo "mid.json" "HEAD~3" "HEAD~1")
+      (diff-review--open 1)
+      (should-not (file-directory-p old))
+      (should (file-directory-p new))
+      (let ((entries (diff-review-test--worktree-entries repo)))
+        (should (seq-some (lambda (p) (diff-review-test--same-file-p p new)) entries))
+        (should-not (seq-some (lambda (p) (diff-review-test--same-file-p p old)) entries))))))
 
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here

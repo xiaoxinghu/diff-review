@@ -35,15 +35,41 @@ base it got, so changing the setting leaves existing reviews alone. From Lisp,
 `(diff-review-find-file FILE ROOT BASE HEAD)` reviews HEAD against BASE at ROOT,
 for a commit range. Where the file lives is the caller's choice.
 
+`M-x diff-review-branch` reviews a branch the way a pull request page does:
+pick one of the branches the repository's other worktrees have checked out,
+or type any, and the review of its commits against the base opens. Its file
+is `review/<branch>.json` under the common git directory, the `.git` every
+worktree shares, a slash in the name a folder, so main's clone and the
+branch's worktree open the same file and git never commits it: one file per
+branch, kept as the branch moves. `head` is the branch name, so the review
+follows it: after a commit on the branch, `g` rescans, viewed marks clear
+for the files that changed, and threads follow their lines or read
+outdated. The overview says when the branch has moved past what it shows.
+The review is of the branch's commits, never a worktree's uncommitted
+edits.
+
 A review file:
 
 ```json
 {"format": "diff-review/1",
  "root": "/path/to/worktree/",
  "base": "main",
- "head": "abc1234",
+ "head": "feature/login",
  "viewed": {"src/a.ts": "<blob hash>"}}
 ```
+
+`head` is a branch, which the review follows, or a commit for a fixed
+range; without it the review is of the worktree. The files of a review
+with a `head` are real files too. One that a worktree has checked out at
+that commit, the main checkout included, and has not edited opens there,
+so `xref`, eglot and project.el see an ordinary file in its tree; an edited
+one shows the commit's version in a read-only buffer, as its hunks would
+not line up. Commits no worktree has are checked out under
+`review/worktrees/<hash>` in the common git directory, a throwaway worktree
+the review removes when it ends, and their files open there read-only.
+Ignored files are not in it, so dependencies such as `node_modules` are
+absent: relative imports resolve, package imports read as unresolved. A
+deleted file shows its base version.
 
 In the overview and the sidebar:
 
@@ -169,8 +195,8 @@ Keys Emacs does not know are kept as they are, in a comment too, which is
 where an agent puts a severity or a confidence.
 
 To write a comment as an agent: the blob is `git hash-object -w <path>` in a
-worktree review, `git rev-parse <head>:<path>` for a range of commits; append
-one object. The `-w` stores the blob, which a worktree file's is not until it
+worktree review, `git rev-parse <head>:<path>` for a review with a `head`, a
+branch or a commit; append one object. The `-w` stores the blob, which a worktree file's is not until it
 is committed, so git can diff it once the file moves on; without it the thread
 reads as outdated the moment the file changes. To reply, push to the thread's `replies`; to mark it fixed, add
 `"resolved": true`. Emacs rereads the file before each of its own writes and
