@@ -1312,7 +1312,7 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
 
 (ert-deftest diff-review-test-throwaway-worktree ()
   "Commits no worktree has are checked out under review/worktrees, read-only;
-the worktree follows the tip on a rescan and goes on quit."
+a moved tip gets a new worktree, the old one going; the last goes on quit."
   (diff-review-test--with-repo
     (diff-review-test--git "branch" "stale")               ; at two
     (diff-review-test--git "commit" "-q" "-am" "three")    ; main moves on
@@ -1354,16 +1354,35 @@ the worktree follows the tip on a rescan and goes on quit."
       (let ((tmp (diff-review-test--worktree repo "tmp" "stale")))
         (diff-review-test--commit-in tmp "a.txt" "a\nB\nc\nd\nE\n" "stale two")
         (diff-review-test--git "worktree" "remove" tmp))
-      (with-current-buffer review (diff-review-refresh))
-      (let ((new (with-current-buffer review (diff-review--git "rev-parse" "stale"))))
+      (let ((other (find-file-noselect (expand-file-name "src/b.txt" dir))))   ; as xref would
+        (should (buffer-local-value 'buffer-read-only other))
+        (with-current-buffer review (diff-review-refresh))
+        (should-not (buffer-live-p other)))   ; gone with the old commit's worktree
+      (let* ((new (with-current-buffer review (diff-review--git "rev-parse" "stale")))
+             (new-dir (expand-file-name (concat ".git/review/worktrees/" new) repo)))
         (should-not (equal new hash))
         (should (equal (buffer-local-value 'diff-review--tip review) new))
-        (should (equal (diff-review--git-at dir "rev-parse" "HEAD") new))
-        (should (eq (window-buffer) file))
+        (should-not (file-directory-p dir))
+        (should (file-directory-p new-dir))
+        (should-not (buffer-live-p file))
+        (setq file (window-buffer))
         (with-current-buffer file
           (should diff-review-file-mode)
           (should buffer-read-only)
-          (should (equal (buffer-string) "a\nB\nc\nd\nE\n"))))
+          (should (diff-review-test--same-file-p buffer-file-name (expand-file-name "a.txt" new-dir)))
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\n"))
+          ;; Edited past the read-only, the file is shown as the commit has it.
+          (setq buffer-read-only nil)
+          (goto-char (point-max))
+          (insert "edit\n"))
+        (with-current-buffer review (diff-review--open 1))
+        (with-current-buffer (window-buffer)
+          (should-not buffer-file-name)
+          (should (equal (buffer-string) "a\nB\nc\nd\nE")))
+        (with-current-buffer file (revert-buffer t t))
+        (with-current-buffer review (diff-review--open 1))
+        (should (eq (window-buffer) file))
+        (setq dir new-dir))
       (let ((other (find-file-noselect (expand-file-name "src/b.txt" dir))))   ; as xref would
         (should (buffer-local-value 'buffer-read-only other))
         (with-current-buffer review (diff-review-quit))

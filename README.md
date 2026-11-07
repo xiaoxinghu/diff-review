@@ -66,12 +66,15 @@ so `xref`, eglot and project.el see an ordinary file in its tree; an edited
 one shows the commit's version in a read-only buffer, as its hunks would
 not line up. Commits no worktree has are checked out under
 `review/worktrees/<hash>` in the common git directory, a throwaway worktree
-the review removes when it ends, and their files open there read-only. It
-is one review's, locked for the Emacs that added it; a second review of
-the same commit meanwhile shows read-only buffers of the files instead,
-and one a killed Emacs left goes with the next review that needs one.
-Files reached in it through `xref` are read-only too; one changed anyway
-keeps the worktree, named in a message, until this Emacs is gone.
+of that one commit, which the review removes when it ends, or when a
+rescan finds the branch moved on and the new tip's files have taken its
+place; their files open there read-only, and one edited anyway is a
+read-only buffer of the commit's version again. It is one review's,
+locked for the Emacs that added it; a second review of the same commit
+meanwhile shows read-only buffers of the files instead, and one a killed
+Emacs left goes with the next review that needs one. Files reached in it
+through `xref` are read-only too; one changed anyway keeps the worktree,
+named in a message, until this Emacs is gone.
 Ignored files are not in it, so dependencies such as `node_modules` are
 absent: relative imports resolve, package imports read as unresolved. A
 deleted file shows its base version.
