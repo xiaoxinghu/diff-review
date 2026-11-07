@@ -633,6 +633,15 @@ TEXT defaults to changes at lines 2 and 4."
 
 ;;;; Fringe bars
 
+(defmacro diff-review-test--with-bitmap (&rest body)
+  "Run BODY as if this Emacs had the bar's bitmap.
+A build without a window system, like CI's, has none and draws no bars."
+  (declare (indent 0))
+  `(if (and (fboundp 'fringe-bitmap-p) (fringe-bitmap-p 'diff-review-bar))
+       (progn ,@body)
+     (cl-letf (((symbol-function 'fringe-bitmap-p) (lambda (b) (eq b 'diff-review-bar))))
+       ,@body)))
+
 (defun diff-review-test--file (name)
   "Walk the selected window's review to file NAME, and return its buffer."
   (dotimes (_ 5)
@@ -654,24 +663,26 @@ TEXT defaults to changes at lines 2 and 4."
 
 (ert-deftest diff-review-test-a-bar-on-every-changed-line ()
   "The removed line's bar comes before the added line it was replaced by."
-  (diff-review-test--with-repo
-    (delete-other-windows)
-    (diff-review-test--open repo "head.json" "HEAD^")
-    (should (equal (diff-review-test--bars (diff-review-test--file "a.txt"))
-                   '((2 left-fringe diff-review-bar diff-indicator-removed)
-                     (2 left-fringe diff-review-bar diff-indicator-added)
-                     (4 left-fringe diff-review-bar diff-indicator-added)
-                     (5 left-fringe diff-review-bar diff-indicator-added))))))
+  (diff-review-test--with-bitmap
+    (diff-review-test--with-repo
+      (delete-other-windows)
+      (diff-review-test--open repo "head.json" "HEAD^")
+      (should (equal (diff-review-test--bars (diff-review-test--file "a.txt"))
+                     '((2 left-fringe diff-review-bar diff-indicator-removed)
+                       (2 left-fringe diff-review-bar diff-indicator-added)
+                       (4 left-fringe diff-review-bar diff-indicator-added)
+                       (5 left-fringe diff-review-bar diff-indicator-added)))))))
 
 (ert-deftest diff-review-test-bars-in-the-right-fringe ()
-  (diff-review-test--with-repo
-    (delete-other-windows)
-    (diff-review-test--open repo "head.json" "HEAD^")
-    (let ((file (diff-review-test--file "a.txt"))
-          (diff-review-fringe 'right))
-      (with-current-buffer file (diff-review--decorate))
-      (should (equal (delete-dups (mapcar #'cadr (diff-review-test--bars file)))
-                     '(right-fringe))))))
+  (diff-review-test--with-bitmap
+    (diff-review-test--with-repo
+      (delete-other-windows)
+      (diff-review-test--open repo "head.json" "HEAD^")
+      (let ((file (diff-review-test--file "a.txt"))
+            (diff-review-fringe 'right))
+        (with-current-buffer file (diff-review--decorate))
+        (should (equal (delete-dups (mapcar #'cadr (diff-review-test--bars file)))
+                       '(right-fringe)))))))
 
 (ert-deftest diff-review-test-no-bars-keeps-the-hunks ()
   "Without bars, or without the bitmap of an Emacs built for terminals only,
@@ -703,21 +714,22 @@ the hunks keep their overlays, removed lines and moves."
 
 (ert-deftest diff-review-test-org-indent-kept-on-added-lines ()
   "`org-indent-mode' indents with `line-prefix', which a review overlay's would hide."
-  (diff-review-test--with-repo
-    (delete-other-windows)
-    (diff-review-test--write "n.org" "* a\nx\n")
-    (diff-review-test--git "add" ".")
-    (diff-review-test--git "commit" "-q" "-m" "org")
-    (diff-review-test--write "n.org" "* a\nx\ny\n")
-    (diff-review-test--open repo)
-    (with-current-buffer (diff-review-test--file "n.org")
-      (org-indent-mode 1)
-      (org-indent-add-properties (point-min) (point-max))
-      (let ((y (diff-review--line-pos 3)))
-        (should (diff-review-test--bars (current-buffer)))
-        (should (get-text-property y 'line-prefix))
-        (should (equal (get-char-property y 'line-prefix)
-                       (get-text-property y 'line-prefix)))))))
+  (diff-review-test--with-bitmap
+    (diff-review-test--with-repo
+      (delete-other-windows)
+      (diff-review-test--write "n.org" "* a\nx\n")
+      (diff-review-test--git "add" ".")
+      (diff-review-test--git "commit" "-q" "-m" "org")
+      (diff-review-test--write "n.org" "* a\nx\ny\n")
+      (diff-review-test--open repo)
+      (with-current-buffer (diff-review-test--file "n.org")
+        (org-indent-mode 1)
+        (org-indent-add-properties (point-min) (point-max))
+        (let ((y (diff-review--line-pos 3)))
+          (should (diff-review-test--bars (current-buffer)))
+          (should (get-text-property y 'line-prefix))
+          (should (equal (get-char-property y 'line-prefix)
+                         (get-text-property y 'line-prefix))))))))
 
 ;;;; The default base is the user's
 
