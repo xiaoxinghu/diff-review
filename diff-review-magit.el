@@ -1,0 +1,121 @@
+;;; diff-review-magit.el --- The worktrees' branches in magit-status -*- lexical-binding: t; -*-
+
+;; Author: Xiaoxing Hu <hi@xiaoxing.dev>
+;; URL: https://github.com/xiaoxinghu/diff-review
+
+;; This file is not part of GNU Emacs.
+
+;;; Commentary:
+
+;; Every worktree's branch is a candidate pull request, so magit-status
+;; can list them: one row per worktree other than the current one, with
+;; its branch, the commits it has ahead of the base and, once the branch
+;; has a review, the viewed count, the open threads and the verdict.
+;; RET on a row opens the branch's review, creating it, as
+;; `diff-review-branch' does.  A worktree at a detached head, or whose
+;; branch is gone, has no row.
+;;
+;; The section is opt-in; nothing here loads until magit-status asks:
+;;
+;;   (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t)
+
+;;; Code:
+
+(require 'magit)
+(require 'diff-review)
+
+(defvar-keymap diff-review-magit-branch-section-map
+  :doc "Keymap for a branch's row in `diff-review-magit-insert-worktrees'."
+  "<remap> <magit-visit-thing>" #'diff-review-magit-visit)
+
+(defclass diff-review-magit-branch-section (magit-section)
+  ((keymap :initform 'diff-review-magit-branch-section-map))
+  "A worktree's branch, its value the branch name.")
+
+(defun diff-review-magit--branches (root)
+  "The branches of the worktrees of the repository at ROOT other than ROOT's.
+Only those that exist: a worktree at a detached head, or whose branch was
+deleted under it, has none."
+  (let ((here (file-truename root))
+        (default-directory root))
+    (delq nil (mapcar (lambda (worktree)
+                        (let ((branch (plist-get worktree :branch)))
+                          (and branch
+                               (not (equal (file-truename (plist-get worktree :path)) here))
+                               (diff-review--git-maybe "rev-parse" "--verify" "--quiet"
+                                                       (concat "refs/heads/" branch))
+                               branch)))
+                      (diff-review--worktrees root)))))
+
+(defun diff-review-magit--review (file)
+  "What a row shows of review FILE, as visiting it would find it: a plist.
+Read and scanned in a temporary buffer, so nothing is drawn or written."
+  (with-temp-buffer
+    (insert-file-contents file t)
+    (diff-review--read)
+    (diff-review--scan)
+    (list :base diff-review--base-name
+          :viewed (seq-count #'diff-review--viewed-p diff-review--files)
+          :files (length diff-review--files)
+          :open (diff-review--open-count diff-review--comments)
+          :verdict (diff-review--verdict-text))))
+
+(defun diff-review-magit--font-lock (string)
+  "STRING with its faces as `font-lock-face', which font-lock leaves alone."
+  (let ((s (copy-sequence string)) (i 0))
+    (while (< i (length s))
+      (let ((next (next-single-property-change i 'face s (length s))))
+        (when-let* ((face (get-text-property i 'face s)))
+          (put-text-property i next 'font-lock-face face s))
+        (setq i next)))
+    s))
+
+(defun diff-review-magit--row (root branch)
+  "The text after BRANCH's name in its row, in the repository at ROOT."
+  (condition-case err
+      (let* ((file (diff-review--branch-file root branch))
+             (review (and (file-exists-p file) (diff-review-magit--review file)))
+             (base (or (plist-get review :base) (diff-review--default-base root)))
+             (ahead (string-to-number
+                     (diff-review--git-at root "rev-list" "--count" (concat base ".." branch))))
+             (open (plist-get review :open))
+             (verdict (plist-get review :verdict)))
+        (concat
+         (format "%d commit%s" ahead (if (= ahead 1) "" "s"))
+         (and review (format "  %d/%d viewed" (plist-get review :viewed) (plist-get review :files)))
+         (and review (> open 0)
+              (propertize (format "  %d open" open) 'font-lock-face 'diff-review-comment-author))
+         (and review (not (string-empty-p verdict))
+              (concat "  " (diff-review-magit--font-lock verdict)))))
+    (error (propertize (error-message-string err) 'font-lock-face 'error))))
+
+;;;###autoload
+(defun diff-review-magit-insert-worktrees ()
+  "Insert the branches of the other worktrees, each a candidate pull request.
+A row shows the branch, its commits ahead of the base and, once it has a
+review, the viewed count, the open threads and the verdict.  RET on a row
+opens the review, creating it.  For `magit-status-sections-hook':
+
+  (add-hook \\='magit-status-sections-hook
+            #\\='diff-review-magit-insert-worktrees t)"
+  (when-let* ((root (diff-review--toplevel default-directory))
+              (branches (diff-review-magit--branches root)))
+    (let ((width (1+ (apply #'max (mapcar #'string-width branches)))))
+      (magit-insert-section (diff-review-magit-worktrees)
+        (magit-insert-heading t "Worktree branches")
+        (dolist (branch branches)
+          (magit-insert-section (diff-review-magit-branch-section branch)
+            (insert (propertize (string-pad branch width) 'font-lock-face 'magit-branch-local)
+                    (diff-review-magit--row root branch)
+                    "\n")))
+        (insert "\n")))))
+
+;;;###autoload
+(defun diff-review-magit-visit ()
+  "Open the review of the branch at point, creating it."
+  (interactive)
+  (diff-review-branch (or (magit-section-value-if 'diff-review-magit-branch-section)
+                          (user-error "No worktree branch at point"))))
+
+(provide 'diff-review-magit)
+;;; diff-review-magit.el ends here

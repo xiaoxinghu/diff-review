@@ -2,7 +2,10 @@
 
 ## Keep it small
 
-- One file, `diff-review.el`. Build what the task in hand asks for.
+- One file, `diff-review.el`, plus optional integration files, such as
+  `diff-review-magit.el`, that require what they integrate with. Only their
+  entry points carry autoload cookies, and nothing in `diff-review.el`
+  loads them. Build what the task in hand asks for.
 - No assumptions about the user's keys, display modes, faces or git setup:
   where the package would decide one of those, a defcustom or defface decides,
   with a conventional default. Everything else stays minimal: no option for a
@@ -17,12 +20,14 @@
 ## Checks
 
 - `make check`: byte-compile without warnings, checkdoc, and the ERT tests in
-  `test/`. The tests build a git repository in a temp folder and drive windows
-  in batch Emacs; a window change that the redisplay hook would notice is
-  settled by calling `diff-review--follow` directly.
-- `make deps`, which `check` runs first, fetches magit-section from MELPA into
-  `.deps/`; no Emacs config is read. CI runs `make check` on Emacs 29.1 and
-  the latest release.
+  `test/`. `diff-review.el` and its tests run with magit off the load path;
+  `test/diff-review-magit-test.el` runs on its own, with magit. The tests
+  build a git repository in a temp folder and drive windows in batch Emacs; a
+  window change that the redisplay hook would notice is settled by calling
+  `diff-review--follow` directly.
+- `make deps`, which `check` runs first, fetches magit-section and magit from
+  MELPA into `.deps/`; no Emacs config is read. CI runs `make check` on
+  Emacs 29.1 and the latest release.
 
 ## Writing
 

@@ -22,7 +22,7 @@ keeps that width, through `balance-windows` and hiding the sidebar.
   :vc (:url "https://github.com/xiaoxinghu/diff-review" :rev :newest))
 ```
 
-Needs Emacs 29.1 and `magit-section`.
+Needs Emacs 29.1 and `magit-section`; the magit-status section needs magit.
 
 ## Use
 
@@ -47,6 +47,21 @@ for the files that changed, and threads follow their lines or read
 outdated. The overview says when the branch has moved past what it shows.
 The review is of the branch's commits, never a worktree's uncommitted
 edits.
+
+Every worktree's branch is a candidate pull request, and magit-status can
+list them. `diff-review-magit.el`, in the package, adds a section for that;
+it requires magit, and nothing of it loads until magit-status asks, so
+installing the package never loads magit. The section is yours to add:
+
+```elisp
+(add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t)
+```
+
+It has a row for each worktree other than the one magit-status is in: the
+branch, its commits ahead of the base and, once the branch has a review, how
+many of its files are viewed, its open threads and the verdict. `RET` on a
+row opens the review, creating it, as `diff-review-branch` does. A worktree
+at a detached head, or whose branch was deleted, has no row.
 
 A review file:
 
@@ -296,6 +311,7 @@ gives it back.
 ## Check
 
 `make check` byte-compiles without warnings, runs checkdoc and the ERT tests.
-It reads no Emacs config: the first run fetches magit-section from MELPA into
-`.deps/` (`make deps`), and `rm -rf .deps` starts over. `EMACS=...` picks the
+It reads no Emacs config: the first run fetches magit-section and magit from
+MELPA into `.deps/` (`make deps`), and `rm -rf .deps` starts over.
+`diff-review.el` compiles and its tests run with magit off the load path. `EMACS=...` picks the
 Emacs.
