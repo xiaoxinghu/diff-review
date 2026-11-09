@@ -73,5 +73,72 @@ RET opens one.  A detached worktree and one whose branch is gone have no row."
             (should (file-exists-p (diff-review--branch-file repo "feat/x"))))
         (when (buffer-live-p status) (kill-buffer status))))))
 
+(defun diff-review-magit-test--paths ()
+  "The paths of this review's files."
+  (mapcar (lambda (f) (plist-get f :path)) diff-review--files))
+
+(defun diff-review-magit-test--select (lines)
+  "In a magit log, select its first LINES commits and review them."
+  (goto-char (point-min))
+  (push-mark (point) t t)
+  (dotimes (_ (1- lines)) (magit-section-forward))
+  (diff-review-magit-commits))
+
+(ert-deftest diff-review-magit-test-commits ()
+  "Selections in a log review exactly their commits, each in a range file
+under the common dir, the same from main's clone and the branch's worktree;
+without a region, the commit at point."
+  (diff-review-test--with-repo
+    (let ((feature (diff-review-test--worktree repo "feature" "-b" "feature"))
+          (transient-mark-mode t)
+          log three)
+      ;; One file a commit, so a review's files say which commits it covers.
+      (dotimes (i 5)
+        (diff-review-test--commit-in feature (format "f%d.txt" (1+ i)) "x\n"
+                                     (format "feature %d" (1+ i))))
+      (delete-other-windows)
+      (unwind-protect
+          (progn
+            (let ((default-directory feature))
+              (setq log (magit-log-setup-buffer (list "feature") nil nil)))
+            (set-buffer log)
+            ;; The top three, then the top five: two reviews.
+            (diff-review-magit-test--select 3)
+            (should (derived-mode-p 'diff-review-mode))
+            (should (equal (diff-review-magit-test--paths) '("f3.txt" "f4.txt" "f5.txt")))
+            (should (diff-review-test--same-file-p diff-review--root repo))
+            (setq three buffer-file-name)
+            (should (diff-review-test--same-file-p
+                     (file-name-directory three)
+                     (expand-file-name "review/" (diff-review--common-dir repo))))
+            (should-not (region-active-p))
+            (diff-review--set-viewed (diff-review--file 0) t)
+            (kill-buffer)
+            (with-current-buffer log
+              (diff-review-magit-test--select 5)
+              (should (equal (diff-review-magit-test--paths)
+                             '("f1.txt" "f2.txt" "f3.txt" "f4.txt" "f5.txt")))
+              (should-not (equal buffer-file-name three))
+              (should-not (file-exists-p (diff-review--branch-file repo "feature")))
+              (kill-buffer))
+            ;; The first selection again, from main's clone: the same file, its mark kept.
+            (let ((default-directory repo))
+              (set-buffer (magit-log-setup-buffer (list "feature") nil nil))
+              (diff-review-magit-test--select 3)
+              (should (equal buffer-file-name three))
+              (should (diff-review--viewed-p (diff-review--file 0)))
+              (kill-buffer))
+            ;; No region: the commit at point.
+            (with-current-buffer log
+              (deactivate-mark)
+              (goto-char (point-min))
+              (magit-section-forward)
+              (diff-review-magit-commits)
+              (should (equal (diff-review-magit-test--paths) '("f4.txt")))
+              (kill-buffer)))
+        (dolist (buffer (buffer-list))
+          (with-current-buffer buffer
+            (when (derived-mode-p 'magit-mode) (kill-buffer buffer))))))))
+
 (provide 'diff-review-magit-test)
 ;;; diff-review-magit-test.el ends here

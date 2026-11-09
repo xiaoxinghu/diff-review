@@ -1,4 +1,4 @@
-;;; diff-review-magit.el --- The worktrees' branches in magit-status -*- lexical-binding: t; -*-
+;;; diff-review-magit.el --- Reviews from magit -*- lexical-binding: t; -*-
 
 ;; Author: Xiaoxing Hu <hi@xiaoxing.dev>
 ;; URL: https://github.com/xiaoxinghu/diff-review
@@ -18,6 +18,9 @@
 ;; The section is opt-in; nothing here loads until magit-status asks:
 ;;
 ;;   (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t)
+;;
+;; `diff-review-magit-commits' reviews the commits selected in any magit
+;; buffer, in a file of their own that every worktree shares.
 
 ;;; Code:
 
@@ -116,6 +119,26 @@ opens the review, creating it.  For `magit-status-sections-hook':
   (interactive)
   (diff-review-branch (or (magit-section-value-if 'diff-review-magit-branch-section)
                           (user-error "No worktree branch at point"))))
+
+;;;###autoload
+(defun diff-review-magit-commits ()
+  "Review the commits the region selects, the oldest included.
+Without a region, the commit at point alone.  The review is of a fixed
+range, never a branch's: its file is review/OLD..NEW.json under the
+common git directory, by the abbreviated hashes, so the same selection
+reopens with its marks from any worktree, and a branch's review stays
+`diff-review-branch''s."
+  (interactive)
+  (let* ((revs (or (magit-region-values '(commit branch) t)
+                   (list (or (magit-commit-at-point) (user-error "No commit at point")))))
+         (root (diff-review--root-here))
+         (new (diff-review--git-at root "rev-parse" (concat (car revs) "^{commit}")))
+         (old (diff-review--git-at root "rev-parse" (concat (car (last revs)) "^{commit}"))))
+    (deactivate-mark)
+    ;; The main worktree as the root: the file outlives the worktree it was made from.
+    (diff-review-find-file (diff-review--range-file root old new)
+                           (or (diff-review--main-worktree root) root)
+                           (concat old "^") new)))
 
 (provide 'diff-review-magit)
 ;;; diff-review-magit.el ends here
