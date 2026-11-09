@@ -3,9 +3,11 @@
 ## Keep it small
 
 - One file, `diff-review.el`, plus optional integration files, such as
-  `diff-review-magit.el`, that require what they integrate with. Only their
-  entry points carry autoload cookies, and nothing in `diff-review.el`
-  loads them. Build what the task in hand asks for.
+  `diff-review-magit.el`, for what they integrate with. Only their entry
+  points carry autoload cookies, and nothing in `diff-review.el` loads them.
+  `diff-review-magit-mode` belongs in an init before magit loads, so that
+  file requires only magit-section and edits magit once magit loads. Build
+  what the task in hand asks for.
 - No assumptions about the user's keys, display modes, faces or git setup:
   where the package would decide one of those, a defcustom or defface decides,
   with a conventional default. Everything else stays minimal: no option for a

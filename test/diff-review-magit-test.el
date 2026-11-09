@@ -12,18 +12,58 @@
 (load (expand-file-name "diff-review-test.el"
                         (file-name-directory (or load-file-name buffer-file-name)))
       nil t)
+(require 'magit)
 (require 'diff-review-magit)
+
+(defun diff-review-magit-test--fresh (form)
+  "FORM's value, printed and read back, from an Emacs with this load path
+and nothing loaded: with this package's autoloads, when FORM is not about
+`diff-review' alone."
+  ;; A folder: `loaddefs-generate' writes nothing into an empty file.
+  (let* ((dir (make-temp-file "diff-review-loaddefs" t))
+         (loaddefs (expand-file-name "loaddefs.el" dir)))
+    (unwind-protect
+        (let ((inhibit-message t))
+          (loaddefs-generate (file-name-directory (locate-library "diff-review-magit"))
+                             loaddefs)
+          (car (read-from-string
+                (with-output-to-string
+                  (with-current-buffer standard-output
+                    (call-process (expand-file-name invocation-name invocation-directory)
+                                  nil '(t nil) nil "-Q" "--batch"
+                                  "--eval" (format "(setq load-path '%S)" load-path)
+                                  "--eval" (format "(load %S nil t)" loaddefs)
+                                  "--eval" (format "(prin1 %S)" form)))))))
+      (delete-directory dir t))))
 
 (ert-deftest diff-review-magit-test-core-loads-no-magit ()
   "With magit on the load path, requiring diff-review loads none of it."
   (should (locate-library "magit"))
-  (should (equal (with-output-to-string
-                   (with-current-buffer standard-output
-                     (call-process (expand-file-name invocation-name invocation-directory)
-                                   nil t nil "-Q" "--batch"
-                                   "--eval" (format "(setq load-path '%S)" load-path)
-                                   "--eval" "(progn (require 'diff-review) (princ (featurep 'magit)))")))
-                 "nil")))
+  (should-not (diff-review-magit-test--fresh '(progn (require 'diff-review) (featurep 'magit)))))
+
+(ert-deftest diff-review-magit-test-mode-before-magit ()
+  "The mode, turned on before magit loads, loads none of it; once magit
+loads, the section joins magit's default sections and `d v' is the review.
+Turned off again before magit loads, it leaves nothing behind."
+  (should (equal (diff-review-magit-test--fresh
+                  '(progn
+                     (diff-review-magit-mode)
+                     (list (featurep 'magit)
+                           (progn (require 'magit) (car magit-status-sections-hook))
+                           (car (last magit-status-sections-hook))
+                           (eq (transient-get-suffix 'magit-diff "v")
+                               (transient-get-suffix 'magit-diff 'diff-review-magit-commits)))))
+                 '(nil magit-insert-status-headers diff-review-magit-insert-worktrees t)))
+  (should (equal (diff-review-magit-test--fresh
+                  '(progn
+                     (diff-review-magit-mode)
+                     (diff-review-magit-mode -1)
+                     (require 'magit)
+                     (list (car magit-status-sections-hook)
+                           (memq 'diff-review-magit-insert-worktrees magit-status-sections-hook)
+                           (ignore-errors
+                             (transient-get-suffix 'magit-diff 'diff-review-magit-commits)))))
+                 '(magit-insert-status-headers nil nil))))
 
 (ert-deftest diff-review-magit-test-worktrees-section ()
   "Magit-status on main lists the other worktrees' branches with their reviews;
@@ -166,6 +206,44 @@ without a region, the commit at point."
               (should (equal (directory-files
                               (expand-file-name "review/" (diff-review--common-dir repo)))
                              files))))
+        (dolist (buffer (buffer-list))
+          (with-current-buffer buffer
+            (when (derived-mode-p 'magit-mode) (kill-buffer buffer))))))))
+
+(ert-deftest diff-review-magit-test-mode ()
+  "On: magit-status lists the worktrees and `d v' in a log reviews the
+selection.  Off: the section and the suffix are gone on the next refresh."
+  (diff-review-test--with-repo
+    (let ((feature (diff-review-test--worktree repo "feature" "-b" "feature"))
+          (transient-mark-mode t)
+          (magit-status-sections-hook magit-status-sections-hook)
+          status)
+      (dotimes (i 3)
+        (diff-review-test--commit-in feature (format "f%d.txt" (1+ i)) "x\n"
+                                     (format "feature %d" (1+ i))))
+      (delete-other-windows)
+      (unwind-protect
+          (progn
+            (diff-review-magit-mode)
+            (magit-status-setup-buffer repo)
+            (setq status (current-buffer))
+            (should (string-match-p "^Worktree branches" (buffer-string)))
+            (let ((default-directory feature))
+              (set-buffer (magit-log-setup-buffer (list "feature") nil nil)))
+            (goto-char (point-min))
+            (push-mark (point) t t)
+            (magit-section-forward)
+            (execute-kbd-macro (kbd "d v"))
+            (should (derived-mode-p 'diff-review-mode))
+            (should (equal (diff-review-magit-test--paths) '("f2.txt" "f3.txt")))
+            (kill-buffer)
+            (diff-review-magit-mode -1)
+            (with-current-buffer status
+              (magit-refresh-buffer)
+              (should-not (string-match-p "^Worktree branches" (buffer-string))))
+            (should-not (ignore-errors
+                          (transient-get-suffix 'magit-diff 'diff-review-magit-commits))))
+        (diff-review-magit-mode -1)
         (dolist (buffer (buffer-list))
           (with-current-buffer buffer
             (when (derived-mode-p 'magit-mode) (kill-buffer buffer))))))))
