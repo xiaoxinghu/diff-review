@@ -2406,6 +2406,17 @@ caller's choice."
   (expand-file-name (concat branch ".json")
                     (expand-file-name "review/" (diff-review--common-dir root))))
 
+(defun diff-review--range-file (root old new)
+  "The review file of the commits OLD to NEW, OLD included, at ROOT.
+Named by their abbreviated hashes, beside the branches' files, so every
+worktree finds one range's review and no branch's file is taken for it."
+  (expand-file-name (apply #'format "%s..%s.json"
+                           (mapcar (lambda (rev)
+                                     (diff-review--git-at root "rev-parse" "--short"
+                                                          (concat rev "^{commit}")))
+                                   (list old new)))
+                    (expand-file-name "review/" (diff-review--common-dir root))))
+
 (defun diff-review--read-branch ()
   "Read a branch to review: one another worktree has checked out, or any typed."
   (let* ((root (diff-review--root-here))

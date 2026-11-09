@@ -1,4 +1,4 @@
-;;; diff-review-magit.el --- The worktrees' branches in magit-status -*- lexical-binding: t; -*-
+;;; diff-review-magit.el --- Reviews from magit -*- lexical-binding: t; -*-
 
 ;; Author: Xiaoxing Hu <hi@xiaoxing.dev>
 ;; URL: https://github.com/xiaoxinghu/diff-review
@@ -18,6 +18,9 @@
 ;; The section is opt-in; nothing here loads until magit-status asks:
 ;;
 ;;   (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t)
+;;
+;; `diff-review-magit-commits' reviews the commits selected in any magit
+;; buffer, in a file of their own that every worktree shares.
 
 ;;; Code:
 
@@ -116,6 +119,41 @@ opens the review, creating it.  For `magit-status-sections-hook':
   (interactive)
   (diff-review-branch (or (magit-section-value-if 'diff-review-magit-branch-section)
                           (user-error "No worktree branch at point"))))
+
+;;;###autoload
+(defun diff-review-magit-commits ()
+  "Review the commits the region selects, the oldest included.
+Without a region, the commit at point alone.  The review is of a fixed
+range, never a branch's: its file is review/OLD..NEW.json under the
+common git directory, by the abbreviated hashes, so the same selection
+reopens with its marks from any worktree, and a branch's review stays
+`diff-review-branch''s."
+  (interactive)
+  (let* ((root (diff-review--root-here))
+         (default-directory root)
+         (shas (mapcar (lambda (rev)
+                         (diff-review--git-at root "rev-parse" (concat rev "^{commit}")))
+                       (or (magit-region-values '(commit branch) t)
+                           (list (or (magit-commit-at-point) (user-error "No commit at point"))))))
+         (new (car shas))
+         (old (car (last shas))))
+    ;; By ancestry, not buffer order: a log can be --reverse.
+    (when (diff-review--git-maybe "merge-base" "--is-ancestor" new old)
+      (cl-rotatef old new))
+    ;; Its review would have no base to open with.
+    (unless (diff-review--git-maybe "rev-parse" "--verify" "--quiet" (concat old "^"))
+      (user-error "The oldest commit selected, %s, has no parent to review against"
+                  (diff-review--git-at root "rev-parse" "--short" old)))
+    ;; A graph log can select commits from beside the range, or ends on two
+    ;; sides of a fork: the review would leave them out.
+    (let ((range (split-string (diff-review--git-at root "rev-list" new (concat "^" old "^")))))
+      (unless (seq-every-p (lambda (sha) (member sha range)) shas)
+        (user-error "The commits selected are not one range of history")))
+    (deactivate-mark)
+    ;; The main worktree as the root: the file outlives the worktree it was made from.
+    (diff-review-find-file (diff-review--range-file root old new)
+                           (or (diff-review--main-worktree root) root)
+                           (concat old "^") new)))
 
 (provide 'diff-review-magit)
 ;;; diff-review-magit.el ends here

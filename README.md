@@ -96,6 +96,12 @@ The section is opt-in and loads magit only when magit-status asks:
   (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t))
 ```
 
+`M-x diff-review-magit-commits` reviews the commits selected in any magit
+buffer, the oldest included, or the commit at point. Its file is
+`review/OLD..NEW.json` under the common git directory, named by their
+abbreviated hashes, so the same selection reopens with its marks from any
+worktree; a branch's own review stays `diff-review-branch`'s.
+
 ## Customize
 
 Every setting has a conventional default; these are the ones worth knowing:
