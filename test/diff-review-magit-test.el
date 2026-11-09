@@ -139,11 +139,20 @@ without a region, the commit at point."
               (kill-buffer))
             ;; A reversed log, oldest first: the same range for the same commits.
             (let ((default-directory feature))
-              (set-buffer (magit-log-setup-buffer (list "feature") (list "--reverse") nil))
+              (set-buffer (setq log (magit-log-setup-buffer (list "feature") (list "--reverse") nil)))
               (diff-review-magit-test--select 3 4)
               (should (equal buffer-file-name three))
               (should (equal (diff-review-magit-test--paths) '("f3.txt" "f4.txt" "f5.txt")))
-              (kill-buffer)))
+              (kill-buffer))
+            ;; The root commit, the reversed log's first, has no parent: no review, no file.
+            (let ((files (directory-files (expand-file-name "review/" (diff-review--common-dir repo)))))
+              (with-current-buffer log
+                (goto-char (point-min))
+                (should-error (diff-review-magit-commits) :type 'user-error)
+                (should (derived-mode-p 'magit-log-mode)))
+              (should (equal (directory-files
+                              (expand-file-name "review/" (diff-review--common-dir repo)))
+                             files))))
         (dolist (buffer (buffer-list))
           (with-current-buffer buffer
             (when (derived-mode-p 'magit-mode) (kill-buffer buffer))))))))

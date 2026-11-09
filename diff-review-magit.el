@@ -139,6 +139,11 @@ reopens with its marks from any worktree, and a branch's review stays
                (let ((default-directory root))
                  (diff-review--git-maybe "merge-base" "--is-ancestor" new old)))
       (cl-rotatef old new))
+    ;; Its review would have no base to open with.
+    (unless (let ((default-directory root))
+              (diff-review--git-maybe "rev-parse" "--verify" "--quiet" (concat old "^")))
+      (user-error "The oldest commit selected, %s, has no parent to review against"
+                  (diff-review--git-at root "rev-parse" "--short" old)))
     (deactivate-mark)
     ;; The main worktree as the root: the file outlives the worktree it was made from.
     (diff-review-find-file (diff-review--range-file root old new)
