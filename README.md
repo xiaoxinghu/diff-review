@@ -97,10 +97,11 @@ abbreviated hashes, so the same selection reopens with its marks from any
 worktree; a branch's own review stays `diff-review-branch`'s.
 
 Both are opt-in, behind one switch. It loads no magit, so it can go
-anywhere in your init:
+anywhere in your init; waiting for magit keeps diff-review itself out of
+startup too, since the mode's autoload loads the package:
 
 ```elisp
-(diff-review-magit-mode)
+(with-eval-after-load 'magit (diff-review-magit-mode))
 ```
 
 The section joins magit-status, and `d v`, "Review" in magit's diff menu,
@@ -133,7 +134,8 @@ Every setting has a conventional default; these are the ones worth knowing:
   :hook
   ((diff-review-mode diff-review-sidebar-mode) . hl-line-mode)
   :init
-  (diff-review-magit-mode))           ; the worktrees in magit-status, and `d v'
+  (with-eval-after-load 'magit        ; the worktrees in magit-status, and `d v'
+    (diff-review-magit-mode)))
 ```
 
 Everything drawn has a face in `M-x customize-group diff-review`. Added and
