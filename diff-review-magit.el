@@ -134,6 +134,11 @@ reopens with its marks from any worktree, and a branch's review stays
          (root (diff-review--root-here))
          (new (diff-review--git-at root "rev-parse" (concat (car revs) "^{commit}")))
          (old (diff-review--git-at root "rev-parse" (concat (car (last revs)) "^{commit}"))))
+    ;; By ancestry, not buffer order: a log can be --reverse.
+    (when (and (not (equal old new))
+               (let ((default-directory root))
+                 (diff-review--git-maybe "merge-base" "--is-ancestor" new old)))
+      (cl-rotatef old new))
     (deactivate-mark)
     ;; The main worktree as the root: the file outlives the worktree it was made from.
     (diff-review-find-file (diff-review--range-file root old new)

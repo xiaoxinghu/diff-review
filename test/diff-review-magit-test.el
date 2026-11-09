@@ -77,9 +77,10 @@ RET opens one.  A detached worktree and one whose branch is gone have no row."
   "The paths of this review's files."
   (mapcar (lambda (f) (plist-get f :path)) diff-review--files))
 
-(defun diff-review-magit-test--select (lines)
-  "In a magit log, select its first LINES commits and review them."
+(defun diff-review-magit-test--select (lines &optional skip)
+  "In a magit log, select LINES commits after the first SKIP and review them."
   (goto-char (point-min))
+  (dotimes (_ (or skip 0)) (magit-section-forward))
   (push-mark (point) t t)
   (dotimes (_ (1- lines)) (magit-section-forward))
   (diff-review-magit-commits))
@@ -135,6 +136,13 @@ without a region, the commit at point."
               (magit-section-forward)
               (diff-review-magit-commits)
               (should (equal (diff-review-magit-test--paths) '("f4.txt")))
+              (kill-buffer))
+            ;; A reversed log, oldest first: the same range for the same commits.
+            (let ((default-directory feature))
+              (set-buffer (magit-log-setup-buffer (list "feature") (list "--reverse") nil))
+              (diff-review-magit-test--select 3 4)
+              (should (equal buffer-file-name three))
+              (should (equal (diff-review-magit-test--paths) '("f3.txt" "f4.txt" "f5.txt")))
               (kill-buffer)))
         (dolist (buffer (buffer-list))
           (with-current-buffer buffer
