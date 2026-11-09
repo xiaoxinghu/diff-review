@@ -935,6 +935,49 @@ the hunks keep their overlays, removed lines and moves."
                          (diff-review--in-review diff-review--comments))))
         (should (= 1 (length (gethash "replies" c))))))))
 
+;;;; The JSON
+
+(ert-deftest diff-review-test-toggle-raw ()
+  "C-c C-c shows the file as its JSON in the same window, the review ended, and back."
+  (diff-review-test--with-repo
+    (let* ((review (diff-review-test--open repo))
+           (window (selected-window)))
+      (should (diff-review-test--sidebar window))
+      (diff-review-toggle-raw)
+      (should (eq (window-buffer window) review))
+      (with-current-buffer review
+        (should-not (derived-mode-p 'diff-review-mode))
+        (should diff-review-raw-mode)
+        (should-not buffer-read-only)
+        (should-not (buffer-modified-p))
+        (should (equal (buffer-string)
+                       (with-temp-buffer
+                         (insert-file-contents (expand-file-name "review.json" repo))
+                         (buffer-string)))))
+      (should-not (diff-review--sidebar-window window))
+      (should-not (memq #'diff-review--follow window-buffer-change-functions))
+      (diff-review-toggle-raw)
+      (should (eq (window-buffer window) review))
+      (with-current-buffer review
+        (should (derived-mode-p 'diff-review-mode))
+        (should-not diff-review-raw-mode))
+      (diff-review--follow)
+      (should (diff-review-test--sidebar window)))))
+
+(ert-deftest diff-review-test-toggle-raw-keeps-broken-json ()
+  "JSON that is no longer a review stays as it is, in the raw buffer."
+  (diff-review-test--with-repo
+    (let ((review (diff-review-test--open repo)))
+      (diff-review-toggle-raw)
+      (with-current-buffer review
+        (goto-char (point-min))
+        (insert "oops")
+        (save-buffer)
+        (should-error (diff-review-toggle-raw) :type 'user-error)
+        (should diff-review-raw-mode)
+        (should-not (derived-mode-p 'diff-review-mode))
+        (should (string-prefix-p "oops" (buffer-string)))))))
+
 (ert-deftest diff-review-test-revert-leaves-nothing-behind ()
   "A plain revert, which re-runs the major mode, takes the review off with it."
   (diff-review-test--with-repo

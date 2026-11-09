@@ -1061,6 +1061,43 @@ The threads say which; the verdict holds until the head moves past that commit."
     (setq diff-review--sidebar-enabled (not diff-review--sidebar-enabled)))
   (mapc #'diff-review--follow (frame-list)))
 
+(defvar-keymap diff-review-raw-mode-map
+  :doc "Keymap for `diff-review-raw-mode'."
+  "C-c C-c" #'diff-review-toggle-raw)
+
+(define-minor-mode diff-review-raw-mode
+  "Minor mode in a review file shown as its JSON.
+\\<diff-review-raw-mode-map>\\[diff-review-toggle-raw] turns it back into the review."
+  :lighter " Raw")
+
+(defun diff-review-toggle-raw ()
+  "Show the review file as its JSON, ending the review, or the JSON as the review.
+Like `doc-view-toggle-display': the overview gives way to the file in
+the mode its name picks, and back.  Unsaved JSON is saved first, or kept."
+  (interactive)
+  (if diff-review-raw-mode
+      (progn
+        (when (buffer-modified-p)
+          (if (y-or-n-p "Save the JSON first? ")
+              (save-buffer)
+            (user-error "The JSON has unsaved changes")))
+        (condition-case err
+            (diff-review-mode)
+          (error (diff-review--raw)       ; not a review: the JSON stays
+                 (signal (car err) (cdr err)))))
+    (diff-review-overview)
+    (diff-review--raw)))
+
+(defun diff-review--raw ()
+  "Turn the review in the current buffer into its file's JSON."
+  (diff-review--end)
+  (kill-local-variable 'revert-buffer-function)
+  ;; A revert re-runs `set-auto-mode', which without this match goes by the name.
+  (let ((magic-mode-alist (seq-remove (lambda (entry) (eq (cdr entry) #'diff-review-mode))
+                                      magic-mode-alist)))
+    (revert-buffer t t))
+  (diff-review-raw-mode))
+
 (defvar-keymap diff-review-mode-map
   :doc "Keymap for `diff-review-mode', shared with the sidebar."
   :parent magit-section-mode-map
@@ -1073,6 +1110,7 @@ The threads say which; the verdict holds until the head moves past that commit."
   "t" #'diff-review-toggle-sidebar
   "A" #'diff-review-approve
   "C" #'diff-review-request-changes
+  "C-c C-c" #'diff-review-toggle-raw
   "q" #'diff-review-quit)
 
 ;;;###autoload
@@ -1085,6 +1123,7 @@ or folds a directory; a click on a file shows it too.
 \\[diff-review-toggle-viewed] toggles the viewed mark, \\[diff-review-refresh] rescans
 and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
 \\[diff-review-approve] approves the head and \\[diff-review-request-changes] asks for changes to it.
+\\[diff-review-toggle-raw] shows the file as its JSON, and back.
 \\[diff-review-quit] ends the review, as does killing the buffer.
 
 \\{diff-review-mode-map}"
@@ -1126,14 +1165,17 @@ dedicated one."
                 (set-window-dedicated-p window was))))
 
 (defun diff-review--close ()
-  "End the review being killed: its files' decorations and its sidebar.
-Windows showing the review or its files go back to what they showed
-before it; buffers showing a revision of a file are killed, as is the
-throwaway worktree.  The last review to go takes `diff-review--follow'
-off the window hook."
+  "End the review being killed, as `diff-review--end' does.
+Windows showing the review go back to what they showed before it."
+  (diff-review--leave (current-buffer) #'diff-review--end))
+
+(defun diff-review--end ()
+  "End the review in the current buffer: its files' decorations and its sidebar.
+Windows showing its files go back to what they showed before; buffers
+showing a revision of a file are killed, as is the throwaway worktree.
+The last review to go takes `diff-review--follow' off the window hook."
   (let ((review (current-buffer)))
     (mapc #'diff-review--drop (diff-review--file-buffers))
-    (diff-review--leave review #'ignore)
     (when (buffer-live-p diff-review--sidebar)
       (kill-buffer diff-review--sidebar))
     (dolist (dir (delq nil (list diff-review--worktree diff-review--superseded)))
