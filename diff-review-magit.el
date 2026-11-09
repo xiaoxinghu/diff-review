@@ -15,17 +15,33 @@
 ;; `diff-review-branch' does.  A worktree at a detached head, or whose
 ;; branch is gone, has no row.
 ;;
-;; The section is opt-in; nothing here loads until magit-status asks:
-;;
-;;   (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t)
-;;
 ;; `diff-review-magit-commits' reviews the commits selected in any magit
 ;; buffer, in a file of their own that every worktree shares.
+;;
+;; Both are opt-in, behind one switch, which loads no magit:
+;;
+;;   (diff-review-magit-mode)
+;;
+;; It adds the section to magit-status and `v' "Review" to the `magit-diff'
+;; transient, `d v'.  For one half alone:
+;;
+;;   (with-eval-after-load 'magit
+;;     (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t))
+;;   (with-eval-after-load 'magit
+;;     (transient-append-suffix 'magit-diff 'magit-stash-show
+;;       '("v" "Review" diff-review-magit-commits)))
 
 ;;; Code:
 
-(require 'magit)
+;; magit-section only: the mode must be safe to turn on before magit loads,
+;; and the rest runs in magit's buffers, where magit is loaded.
+(require 'magit-section)
 (require 'diff-review)
+
+(defvar magit-status-sections-hook)
+(declare-function magit-commit-at-point "magit-git" ())
+(declare-function transient-append-suffix "transient" (prefix loc suffix &optional keep-other))
+(declare-function transient-remove-suffix "transient" (prefix loc))
 
 (defvar-keymap diff-review-magit-branch-section-map
   :doc "Keymap for a branch's row in `diff-review-magit-insert-worktrees'."
@@ -154,6 +170,29 @@ reopens with its marks from any worktree, and a branch's review stays
     (diff-review-find-file (diff-review--range-file root old new)
                            (or (diff-review--main-worktree root) root)
                            (concat old "^") new)))
+
+;;;###autoload
+(define-minor-mode diff-review-magit-mode
+  "Reviews in magit: the worktrees section in magit-status, and `d v'.
+`diff-review-magit-insert-worktrees' joins `magit-status-sections-hook',
+and `diff-review-magit-commits' the `magit-diff' transient as `v'
+\"Review\".  Safe to turn on before magit loads, which it waits for."
+  :global t
+  :group 'diff-review
+  ;; Not before magit loads: an add-hook would bind the hook first, and
+  ;; magit's defcustom would leave out its default sections.  The mode's
+  ;; value is read then, so turning it off meanwhile leaves nothing added.
+  (with-eval-after-load 'magit (diff-review-magit--sync)))
+
+(defun diff-review-magit--sync ()
+  "Add the section and the suffix to magit, or remove them, per the mode."
+  (if diff-review-magit-mode
+      (progn
+        (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t)
+        (transient-append-suffix 'magit-diff 'magit-stash-show
+          '("v" "Review" diff-review-magit-commits)))
+    (remove-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees)
+    (transient-remove-suffix 'magit-diff 'diff-review-magit-commits)))
 
 (provide 'diff-review-magit)
 ;;; diff-review-magit.el ends here

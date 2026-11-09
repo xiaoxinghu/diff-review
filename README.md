@@ -89,18 +89,30 @@ for the keys you have bound.
 Every worktree's branch is a candidate pull request, and magit-status can
 list them: the branch, its commits ahead of the base and, once it has a
 review, the viewed count, open threads and verdict, `RET` opening the review.
-The section is opt-in and loads magit only when magit-status asks:
-
-```elisp
-(with-eval-after-load 'magit
-  (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t))
-```
 
 `M-x diff-review-magit-commits` reviews the commits selected in any magit
 buffer, the oldest included, or the commit at point. Its file is
 `review/OLD..NEW.json` under the common git directory, named by their
 abbreviated hashes, so the same selection reopens with its marks from any
 worktree; a branch's own review stays `diff-review-branch`'s.
+
+Both are opt-in, behind one switch. It loads no magit, so it can go
+anywhere in your init:
+
+```elisp
+(diff-review-magit-mode)
+```
+
+The section joins magit-status, and `d v`, "Review" in magit's diff menu,
+reviews the selection. `M-x diff-review-magit-mode` again takes both out.
+For one half alone:
+
+```elisp
+(with-eval-after-load 'magit
+  (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t)
+  (transient-append-suffix 'magit-diff 'magit-stash-show
+    '("v" "Review" diff-review-magit-commits)))
+```
 
 ## Customize
 
@@ -120,9 +132,8 @@ Every setting has a conventional default; these are the ones worth knowing:
   (diff-review-author "xiaoxing")      ; the name on your comments; nil is git's user.name
   :hook
   ((diff-review-mode diff-review-sidebar-mode) . hl-line-mode)
-  :config
-  (with-eval-after-load 'magit
-    (add-hook 'magit-status-sections-hook #'diff-review-magit-insert-worktrees t)))
+  :init
+  (diff-review-magit-mode))           ; the worktrees in magit-status, and `d v'
 ```
 
 Everything drawn has a face in `M-x customize-group diff-review`. Added and
