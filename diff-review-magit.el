@@ -129,23 +129,26 @@ common git directory, by the abbreviated hashes, so the same selection
 reopens with its marks from any worktree, and a branch's review stays
 `diff-review-branch''s."
   (interactive)
-  (let* ((revs (or (magit-region-values '(commit branch) t)
-                   (list (or (magit-commit-at-point) (user-error "No commit at point")))))
-         (root (diff-review--root-here))
-         (new (diff-review--git-at root "rev-parse" (concat (car revs) "^{commit}")))
-         (old (diff-review--git-at root "rev-parse" (concat (car (last revs)) "^{commit}"))))
-    ;; By ancestry, not buffer order: a log can be --reverse.  Ends on two
-    ;; sides of a fork have no range: the merge base would drop the older.
-    (let ((default-directory root))
-      (cond ((diff-review--git-maybe "merge-base" "--is-ancestor" old new))
-            ((diff-review--git-maybe "merge-base" "--is-ancestor" new old)
-             (cl-rotatef old new))
-            (t (user-error "The commits selected are not on one line of history"))))
+  (let* ((root (diff-review--root-here))
+         (default-directory root)
+         (shas (mapcar (lambda (rev)
+                         (diff-review--git-at root "rev-parse" (concat rev "^{commit}")))
+                       (or (magit-region-values '(commit branch) t)
+                           (list (or (magit-commit-at-point) (user-error "No commit at point"))))))
+         (new (car shas))
+         (old (car (last shas))))
+    ;; By ancestry, not buffer order: a log can be --reverse.
+    (when (diff-review--git-maybe "merge-base" "--is-ancestor" new old)
+      (cl-rotatef old new))
     ;; Its review would have no base to open with.
-    (unless (let ((default-directory root))
-              (diff-review--git-maybe "rev-parse" "--verify" "--quiet" (concat old "^")))
+    (unless (diff-review--git-maybe "rev-parse" "--verify" "--quiet" (concat old "^"))
       (user-error "The oldest commit selected, %s, has no parent to review against"
                   (diff-review--git-at root "rev-parse" "--short" old)))
+    ;; A graph log can select commits from beside the range, or ends on two
+    ;; sides of a fork: the review would leave them out.
+    (let ((range (split-string (diff-review--git-at root "rev-list" new (concat "^" old "^")))))
+      (unless (seq-every-p (lambda (sha) (member sha range)) shas)
+        (user-error "The commits selected are not one range of history")))
     (deactivate-mark)
     ;; The main worktree as the root: the file outlives the worktree it was made from.
     (diff-review-find-file (diff-review--range-file root old new)
