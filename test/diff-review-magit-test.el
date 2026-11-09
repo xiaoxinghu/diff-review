@@ -152,6 +152,15 @@ without a region, the commit at point."
                 (should (derived-mode-p 'magit-log-mode)))
               (should (equal (directory-files
                               (expand-file-name "review/" (diff-review--common-dir repo)))
+                             files))
+              ;; Ends on two sides of a fork: no range, no file.
+              (diff-review-test--commit-in repo "s.txt" "s\n" "main moves on")
+              (with-current-buffer log
+                (cl-letf (((symbol-function 'magit-region-values)
+                           (lambda (&rest _) (list "main" "feature"))))
+                  (should-error (diff-review-magit-commits) :type 'user-error)))
+              (should (equal (directory-files
+                              (expand-file-name "review/" (diff-review--common-dir repo)))
                              files))))
         (dolist (buffer (buffer-list))
           (with-current-buffer buffer

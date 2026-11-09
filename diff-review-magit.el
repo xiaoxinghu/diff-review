@@ -134,11 +134,13 @@ reopens with its marks from any worktree, and a branch's review stays
          (root (diff-review--root-here))
          (new (diff-review--git-at root "rev-parse" (concat (car revs) "^{commit}")))
          (old (diff-review--git-at root "rev-parse" (concat (car (last revs)) "^{commit}"))))
-    ;; By ancestry, not buffer order: a log can be --reverse.
-    (when (and (not (equal old new))
-               (let ((default-directory root))
-                 (diff-review--git-maybe "merge-base" "--is-ancestor" new old)))
-      (cl-rotatef old new))
+    ;; By ancestry, not buffer order: a log can be --reverse.  Ends on two
+    ;; sides of a fork have no range: the merge base would drop the older.
+    (let ((default-directory root))
+      (cond ((diff-review--git-maybe "merge-base" "--is-ancestor" old new))
+            ((diff-review--git-maybe "merge-base" "--is-ancestor" new old)
+             (cl-rotatef old new))
+            (t (user-error "The commits selected are not on one line of history"))))
     ;; Its review would have no base to open with.
     (unless (let ((default-directory root))
               (diff-review--git-maybe "rev-parse" "--verify" "--quiet" (concat old "^")))
