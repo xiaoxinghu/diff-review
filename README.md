@@ -118,16 +118,21 @@ For one half alone:
 ## Pull requests
 
 A pull request on a forge is a review too, its threads kept in step with
-the forge's. A backend per forge does the talking; GitHub's is the one there
-is.
+the forge's. A backend per forge does the talking: GitHub's through
+[gh](https://cli.github.com), GitLab's through
+[glab](https://gitlab.com/gitlab-org/cli), so `gh auth login` or `glab auth
+login` is all the setup.
 
-`M-x diff-review-github-pr` reviews a GitHub pull request: pick an open one,
-or type its number. Its head is fetched into `refs/pull/N` and its base from
-`origin`, and the review is `review/github/N.json` under the common git
-directory, following that ref. The forge's threads come in on the lines they
-were written on, so the review follows them to the tip and says when they
-are outdated; a file comment is listed with the file, and the conversation
-and review bodies are threads on the review as a whole.
+`M-x diff-review-github-pr` reviews a GitHub pull request, and `M-x
+diff-review-gitlab-mr` a GitLab merge request: pick an open one, or type its
+number; with `C-u`, the number alone is read, for one the list leaves out.
+Its head is fetched into `refs/pull/N` or `refs/merge-requests/N` and its
+base from `origin`, and the review is `review/github/N.json` or
+`review/gitlab/N.json` under the common git directory, following that ref.
+The forge's threads come in on the lines they were written on, either side
+of the diff, so the review follows them to the tip and says when they are
+outdated; a file comment is listed with the file, and comments on no line
+are threads on the review as a whole.
 
 `M-x diff-review-forge-pull` fetches again and brings the threads up to the
 forge's: its text wins, and its resolved state once it changed there.
@@ -135,19 +140,27 @@ Threads and replies not sent yet stay.
 
 `M-x diff-review-forge-submit` asks, then sends what was written here: new
 threads, replies, threads resolved or reopened, and the verdict (`A` or `C`).
-On GitHub the new threads go as one review on the tip the review shows, the
-verdict its event and the review-wide threads its body. GitHub takes a line
-comment only inside the pull request's hunks, so a thread outside them goes
-on its file with its lines in the text, and one on a file the pull request
-leaves alone goes in the body.
+A thread on a file the pull request leaves alone goes with its path and
+lines in its text.
 
-The GitHub backend talks through [gh](https://cli.github.com), so `gh auth
-login` is all the setup. A fork's pull requests are usually on `upstream`,
-and a gh that `exec-path` does not find can be named in full:
+- On GitHub the new threads go as one review on the tip the review shows,
+  the verdict its event and the review-wide threads its body. GitHub takes
+  a line comment only inside the pull request's hunks, so a thread outside
+  them goes on its file with its lines in the text.
+- On GitLab each new thread is a discussion on its last line at the tip, on
+  any line of the file, with a range in its text; one whose lines the tip
+  changed goes on its file. Approving approves; GitLab's API has no request
+  for changes, so `C` revokes an approval sent before and the threads say
+  the rest.
+
+A fork's pull requests are usually on `upstream`, and a CLI that `exec-path`
+does not find can be named in full:
 
 ```elisp
 (setq diff-review-github-remote "upstream"
-      diff-review-github-program "/path/to/gh")
+      diff-review-github-program "/path/to/gh"
+      diff-review-gitlab-remote "upstream"
+      diff-review-gitlab-program "/path/to/glab")
 ```
 
 The review file names its backend, `"forge": {"backend": "github", "number":

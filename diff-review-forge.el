@@ -37,8 +37,8 @@
 A plist: :head, the ref the head was fetched into; :base, the base as a
 revision; :threads, the forge's threads in the review's own format.  Each
 thread has a \"forge\" table, made by `diff-review-forge-message': \"node\",
-the forge's id for it, and for one that takes replies and resolves,
-\"thread\" and \"resolved\", its state on the forge.  `default-directory'
+the forge's id for it; \"thread\" when its replies are on the forge; and
+\"resolved\", its state there, when it resolves there.  `default-directory'
 is the root.")
 
 (cl-defgeneric diff-review-forge-send (backend number new replies resolves verdict)
@@ -51,6 +51,63 @@ sends nothing twice; the verdict is sent once this returns.  The review
 buffer is current.")
 
 ;;;; For backends
+
+(defun diff-review-forge-read (prompt candidates)
+  "Read a pull request's number with PROMPT, among CANDIDATES or typed.
+CANDIDATES is a function returning (LABEL . NUMBER) pairs, called only
+without a prefix argument: with one, the number alone is read, for a
+pull request the list leaves out, closed or a page past it."
+  (if current-prefix-arg
+      (read-number prompt)
+    (let* ((candidates (funcall candidates))
+           (choice (completing-read prompt candidates)))
+      (or (cdr (assoc choice candidates))
+          (and (string-match "\\`\\s-*[#!]?\\([0-9]+\\)\\s-*\\'" choice)
+               (string-to-number (match-string 1 choice)))
+          (user-error "No pull request %S" choice)))))
+
+(defun diff-review-forge--remote (remote)
+  "The host and path of REMOTE's URL, (HOST . PATH), or nil for a URL with no host.
+`default-directory' is in the repository."
+  (diff-review-forge--url (diff-review--git-at default-directory "remote" "get-url" remote)))
+
+(defun diff-review-forge--url (url)
+  "The host and path URL names, (HOST . PATH), or nil for a URL with no host."
+  (let ((case-fold-search t))
+    (and (string-match (concat "\\`\\(?:[a-z+]+://\\)?\\(?:[^@/]+@\\)?\\([^:/]+\\)"
+                               "\\(?::[0-9]+\\)?[:/]\\([^/].*?\\)\\(?:\\.git\\)?/?\\'")
+                       url)
+         (cons (match-string 1 url) (match-string 2 url)))))
+
+(defun diff-review-forge--run (program env input &rest args)
+  "Run PROGRAM with ARGS, ENV added to the environment, INPUT on its stdin.
+Its output as JSON, parsed, or nil for none.  A failure is an error
+with what it said."
+  (let ((process-environment (append env process-environment))
+        (errors (make-temp-file "diff-review-forge")))
+    (unwind-protect
+        (with-temp-buffer
+          (when input (insert input))
+          (unless (eql 0 (apply #'call-process-region (point-min) (point-max)
+                                program t (list t errors) nil args))
+            (user-error "%s %s: %s" program (string-join args " ")
+                        (with-temp-buffer
+                          (insert-file-contents errors)
+                          (string-trim (buffer-string)))))
+          (goto-char (point-min))
+          (skip-chars-forward " \t\n")
+          (and (not (eobp)) (json-parse-buffer :null-object nil :false-object nil)))
+      (delete-file errors))))
+
+(defun diff-review-forge--fetch-commits (remote commits)
+  "Fetch those of COMMITS git has not from REMOTE, as far as it serves them.
+A force push leaves the commits threads were written on out of the
+pull request's head; without them the threads draw where they were."
+  (when-let* ((missing (seq-remove (lambda (oid)
+                                     (diff-review--git-maybe "cat-file" "-e"
+                                                             (concat oid "^{commit}")))
+                                   (seq-uniq (delq nil commits)))))
+    (apply #'diff-review--git-maybe "fetch" "--quiet" "--no-tags" remote missing)))
 
 (defun diff-review-forge-mark (item &rest pairs)
   "Put PAIRS, keys and values, in ITEM's \"forge\" table, made when missing."
@@ -76,6 +133,47 @@ buffer is current.")
 (defun diff-review-forge--node (item)
   "The forge's id for ITEM, a thread or a reply, or nil."
   (diff-review-forge--get item "forge" "node"))
+
+;;;; Sending
+
+(defun diff-review-forge--file (comment)
+  "The file COMMENT is on, a plist, when the pull request changes it; else nil.
+The review buffer must be current."
+  (when-let* ((path (gethash "path" comment))
+              (index (diff-review--file-index path))
+              (file (diff-review--file index)))
+    (and (not (equal (plist-get file :status) " ")) file)))
+
+(defun diff-review-forge--tip-lines (comment)
+  "COMMENT's lines as the tip has them, (FIRST . LAST).
+Nil when it has none, or the tip changed them.  The review buffer must be
+current."
+  (let* ((written (diff-review--comment-lines comment))
+         (blob (gethash "blob" comment))
+         (tip-blob (and written (diff-review--git-maybe
+                                 "rev-parse" "--verify" "--quiet"
+                                 (concat diff-review--tip ":" (gethash "path" comment))))))
+    (and tip-blob
+         (if (and blob (not (equal blob tip-blob)))
+             (let ((hunks (diff-review--hunks-between blob tip-blob)))
+               (and (listp hunks) (diff-review--map-lines hunks written)))
+           written))))
+
+(defun diff-review-forge--where (path lines)
+  "PATH and LINES, (FIRST . LAST) or nil, as a body begins with them."
+  (concat (and path (format "`%s` " path))
+          (cond ((null lines) "")
+                ((= (car lines) (cdr lines)) (format "line %d" (car lines)))
+                (t (format "lines %d-%d" (car lines) (cdr lines))))
+          (and (or path lines) ": ")))
+
+(defun diff-review-forge--text (comment &optional where)
+  "The text of COMMENT for a forge, its replies after it, WHERE before it."
+  (string-join
+   (cons (concat where (gethash "body" comment))
+         (mapcar (lambda (r) (format "**%s**: %s" (gethash "author" r) (gethash "body" r)))
+                 (gethash "replies" comment)))
+   "\n\n"))
 
 ;;;; The review
 
@@ -217,9 +315,10 @@ and the verdict when the forge does not have it yet.  Asks first."
                                                   (gethash "replies" c))))
                             sent))
            (resolves (seq-filter (lambda (c)
-                                   (and (diff-review-forge--get c "forge" "thread")
-                                        (not (eq (and (gethash "resolved" c) t)
-                                                 (diff-review-forge--get c "forge" "resolved")))))
+                                   (let ((forge (gethash "forge" c)))
+                                     (and (not (eq (gethash "resolved" forge 'no) 'no))
+                                          (not (eq (and (gethash "resolved" c) t)
+                                                   (gethash "resolved" forge))))))
                                  sent))
            (verdict (diff-review-forge--verdict)))
       (unless (or new replies resolves verdict)

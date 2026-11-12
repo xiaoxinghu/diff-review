@@ -5,9 +5,9 @@
 - One file, `diff-review.el`, plus optional integration files, such as
   `diff-review-magit.el`, for what they integrate with. Only their entry
   points carry autoload cookies, and nothing in `diff-review.el` loads them.
-  Forges share `diff-review-forge.el`, pull and submit, and each is a backend
-  file, `diff-review-github.el`, of its two methods and an entry point; the
-  forge file loads the backend the review file names.
+  Forges share `diff-review-forge.el`, pull and submit, and each is a
+  backend file, such as `diff-review-github.el`, of its two methods and an
+  entry point; the forge file loads the backend the review file names.
   `diff-review-magit-mode` belongs in an init before magit loads, so that
   file requires only magit-section and edits magit once magit loads. Build
   what the task in hand asks for.
@@ -26,11 +26,12 @@
 
 - `make check`: byte-compile without warnings, checkdoc, and the ERT tests in
   `test/`. `diff-review.el` and its tests run with magit off the load path;
-  `test/diff-review-magit-test.el` runs on its own, with magit, and
-  `test/diff-review-github-test.el` on its own, with gh faked in Lisp. The tests
-  build a git repository in a temp folder and drive windows in batch Emacs; a
-  window change that the redisplay hook would notice is settled by calling
-  `diff-review--follow` directly.
+  `test/diff-review-magit-test.el` runs on its own, with magit, and the
+  forge tests, `test/diff-review-{forge,github,gitlab}-test.el`, on theirs,
+  each forge's CLI faked in Lisp. The tests build a git repository in a temp
+  folder and drive windows in batch Emacs; a window change that the
+  redisplay hook would notice is settled by calling `diff-review--follow`
+  directly.
 - `make deps`, which `check` runs first, fetches magit-section and magit from
   MELPA into `.deps/`; no Emacs config is read. CI runs `make check` on
   Emacs 29.1 and the latest release.

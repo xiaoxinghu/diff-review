@@ -24,10 +24,12 @@ check: .deps/ok
 	$(BATCH) --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile diff-review.el
 	$(MAGIT) --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile diff-review-magit.el
 	$(BATCH) --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile \
-	  diff-review-forge.el diff-review-github.el
-	rm -f diff-review.elc diff-review-magit.elc diff-review-forge.elc diff-review-github.elc
+	  diff-review-forge.el diff-review-github.el diff-review-gitlab.el
+	rm -f *.elc
 	$(BATCH) --eval '(checkdoc-file "diff-review.el")' --eval '(checkdoc-file "diff-review-magit.el")' \
-	  --eval '(checkdoc-file "diff-review-forge.el")' --eval '(checkdoc-file "diff-review-github.el")'
+	  --eval '(checkdoc-file "diff-review-forge.el")' --eval '(checkdoc-file "diff-review-github.el")' \
+	  --eval '(checkdoc-file "diff-review-gitlab.el")'
 	$(BATCH) -l test/diff-review-test.el -f ert-run-tests-batch-and-exit
-	$(BATCH) -l test/diff-review-github-test.el --eval '(ert-run-tests-batch-and-exit "^diff-review-github-")'
+	$(BATCH) -l test/diff-review-github-test.el -l test/diff-review-gitlab-test.el \
+	  --eval '(ert-run-tests-batch-and-exit "^diff-review-\\(forge\\|github\\|gitlab\\)-")'
 	$(MAGIT) -l test/diff-review-magit-test.el --eval '(ert-run-tests-batch-and-exit "^diff-review-magit-")'

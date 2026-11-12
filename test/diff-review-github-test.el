@@ -2,35 +2,30 @@
 
 ;;; Commentary:
 
-;; Run with the selector "^diff-review-github-": the repository helpers
-;; come from diff-review-test.el.  GitHub is a fake gh, in Lisp, that
-;; serves a pull request and its threads and records what is sent; the
-;; pull request's head is a ref in a bare origin beside the repository.
+;; GitHub is a fake gh, in Lisp, that serves a pull request and its
+;; threads and records what is sent; the pull request is
+;; diff-review-forge-test.el's, its head at refs/pull/5/head.
 
 ;;; Code:
 
 (require 'ert)
-(load (expand-file-name "diff-review-test.el"
-                        (file-name-directory (or load-file-name buffer-file-name)))
-      nil t)
+(require 'diff-review-forge-test
+         (expand-file-name "diff-review-forge-test.el"
+                           (file-name-directory (or load-file-name buffer-file-name))))
 (require 'diff-review-github)
 
 (defvar diff-review-github-test--pr nil "What the fake gh's pr view prints, as Lisp.")
 (defvar diff-review-github-test--threads nil "The fake pull request's review threads, as Lisp.")
 (defvar diff-review-github-test--calls nil "The fake gh's calls, newest first: (ARGS . INPUT).")
 
-(defun diff-review-github-test--json (value)
-  "VALUE, alists and vectors, as gh's JSON reads back."
-  (json-parse-string (json-serialize value) :null-object nil :false-object nil))
-
 (defun diff-review-github-test--gh (input &rest args)
   "The fake gh: answer ARGS, recording them with INPUT, parsed."
   (let ((sent (and input (json-parse-string input :null-object nil :false-object nil))))
     (push (cons args sent) diff-review-github-test--calls)
     (pcase args
-      (`("pr" "view" . ,_) (diff-review-github-test--json diff-review-github-test--pr))
+      (`("pr" "view" . ,_) (diff-review-forge-test--json diff-review-github-test--pr))
       (`("api" "graphql" . ,_)
-       (diff-review-github-test--json
+       (diff-review-forge-test--json
         (if (string-prefix-p "mutation" (gethash "query" sent))
             '((data . ((addPullRequestReviewThreadReply . ((comment . ((id . "NR")))))
                     (resolveReviewThread . ((thread . ((id . "T1"))))))))
@@ -39,7 +34,7 @@
                                   (nodes . ,(vconcat diff-review-github-test--threads))))))))))))
       (`("api" "--method" "POST" . ,_)
        (let ((n (length diff-review-github-test--calls)))
-         (diff-review-github-test--json `((id . ,n) (node_id . ,(format "N%d" n)))))))))
+         (diff-review-forge-test--json `((id . ,n) (node_id . ,(format "N%d" n)))))))))
 
 (defun diff-review-github-test--thread (id line resolved commit &rest comments)
   "A review thread ID on long.txt's LINE, nil for its file, written on COMMIT.
@@ -57,47 +52,26 @@ for a comment whose id outgrew it, as new ones have."
                      comments)))))))
 
 (defmacro diff-review-github-test--with-pr (&rest body)
-  "Run BODY with pull request 5 on a bare origin, `head' its tip, gh faked.
-The pull request changes line 2 of long.txt, twenty lines on main."
+  "Run BODY with pull request 5 on a bare origin, `head' its tip, gh faked."
   (declare (indent 0))
-  `(diff-review-test--with-repo
-     (let* ((origin (concat (directory-file-name repo) "-origin"))
-            (feature (diff-review-test--worktree repo "feature" "-b" "feature"))
-            (long (mapconcat (lambda (i) (format "l%d\n" i)) (number-sequence 1 20) ""))
-            (diff-review-github-test--calls nil)
-            head)
-       (diff-review-test--commit-in repo "long.txt" long "long")
-       (let ((default-directory feature))
-         (diff-review-test--git "merge" "-q" "main"))
-       (diff-review-test--commit-in feature "long.txt" (string-replace "l2\n" "L2\n" long) "pr")
-       (setq head (diff-review--git-at feature "rev-parse" "HEAD"))
-       (diff-review-test--git "init" "-q" "--bare" origin)
-       (diff-review-test--git "remote" "add" "origin" origin)
-       (diff-review-test--git "push" "-q" "origin" "main" "feature:refs/pull/5/head")
-       (let ((diff-review-github-test--pr
-              `((id . "PR5") (number . 5) (title . "Shout") (baseRefName . "main")
-                (headRefOid . ,head)
-                (reviews . [((id . "R1") (author . ((login . "alice"))) (body . "Overall fine.")
-                             (state . "COMMENTED") (submittedAt . "2026-11-01T11:00:00Z"))
-                            ((id . "R2") (author . ((login . "alice"))) (body . "")
-                             (state . "APPROVED") (submittedAt . "2026-11-01T12:00:00Z"))])
-                (comments . [((id . "IC1") (author . ((login . "bob"))) (body . "Ping.")
-                              (createdAt . "2026-11-01T09:00:00Z"))])))
-             (diff-review-github-test--threads
-              (list (diff-review-github-test--thread "T1" 2 nil head
-                                                     '("C1" "alice" "Why shout?")
-                                                     '("C2" "bob" "Because."))
-                    (diff-review-github-test--thread "T2" nil nil head
-                                                     '("C3" "alice" "Whole file."))))
-             (diff-review-sidebar nil))
-         (cl-letf (((symbol-function 'diff-review-github--gh) #'diff-review-github-test--gh)
-                   ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
-           (delete-other-windows)
-           ,@body)))))
-
-(defun diff-review-github-test--by-node (node)
-  "The review's thread whose GitHub node is NODE."
-  (seq-find (lambda (c) (equal (diff-review-forge--node c) node)) diff-review--comments))
+  `(diff-review-forge-test--with-pr "refs/pull/5/head"
+     (let ((diff-review-github-test--calls nil)
+           (diff-review-github-test--pr
+            `((id . "PR5") (baseRefName . "main")
+              (reviews . [((id . "R1") (author . ((login . "alice"))) (body . "Overall fine.")
+                           (state . "COMMENTED") (submittedAt . "2026-11-01T11:00:00Z"))
+                          ((id . "R2") (author . ((login . "alice"))) (body . "")
+                           (state . "APPROVED") (submittedAt . "2026-11-01T12:00:00Z"))])
+              (comments . [((id . "IC1") (author . ((login . "bob"))) (body . "Ping.")
+                            (createdAt . "2026-11-01T09:00:00Z"))])))
+           (diff-review-github-test--threads
+            (list (diff-review-github-test--thread "T1" 2 nil head
+                                                   '("C1" "alice" "Why shout?")
+                                                   '("C2" "bob" "Because."))
+                  (diff-review-github-test--thread "T2" nil nil head
+                                                   '("C3" "alice" "Whole file.")))))
+       (cl-letf (((symbol-function 'diff-review-github--gh) #'diff-review-github-test--gh))
+         ,@body))))
 
 (defun diff-review-github-test--sent (endpoint)
   "What the fake gh was last sent at ENDPOINT, or by the graphql query naming it."
@@ -106,15 +80,6 @@ The pull request changes line 2 of long.txt, twenty lines on main."
                        (and (cdr call) (string-match-p (regexp-quote endpoint)
                                                        (or (gethash "query" (cdr call)) "")))))
                  diff-review-github-test--calls)))
-
-(ert-deftest diff-review-github-test-repo-of-a-url ()
-  "Remote URLs name HOST/OWNER/REPO; a path names none."
-  (dolist (url '("git@github.com:o/r.git" "https://github.com/o/r" "https://github.com/o/r.git/"
-                 "ssh://git@github.com:22/o/r.git" "https://me:t0k@github.com/o/r.git"))
-    (should (equal (diff-review-github--repo url) "github.com/o/r")))
-  (should (equal (diff-review-github--repo "git@ghe.corp:team/app.git") "ghe.corp/team/app"))
-  (should-not (diff-review-github--repo "/tmp/x/origin"))
-  (should-not (diff-review-github--repo "file:///tmp/x/origin.git")))
 
 (ert-deftest diff-review-github-test-gh-on-the-remote-s-repo ()
   "Gh runs on the remote's repository, its input on stdin; a failure says what gh said."
@@ -161,7 +126,7 @@ it is the same review, pulled again."
     ;; R2 is an approval with no body: nothing to read.
     (should (equal (mapcar #'diff-review-forge--node diff-review--comments)
                    '("C1" "C3" "IC1" "R1")))
-    (let ((t1 (diff-review-github-test--by-node "C1")))
+    (let ((t1 (diff-review-forge-test--by-node "C1")))
       (should (equal (gethash "lines" t1) [2 2]))
       (should (equal (gethash "blob" t1) (diff-review--git "rev-parse" (concat head ":long.txt"))))
       (should (equal (gethash "author" t1) "alice"))
@@ -169,10 +134,10 @@ it is the same review, pulled again."
       (should-not (gethash "resolved" t1))
       (should (equal (diff-review-forge--get t1 "forge" "thread") "T1")))
 
-    (let ((t2 (diff-review-github-test--by-node "C3")))
+    (let ((t2 (diff-review-forge-test--by-node "C3")))
       (should (equal (gethash "path" t2) "long.txt"))
       (should-not (gethash "lines" t2)))
-    (should-not (gethash "path" (diff-review-github-test--by-node "R1")))
+    (should-not (gethash "path" (diff-review-forge-test--by-node "R1")))
     (should (string-match-p "long.txt:2  alice  Why shout\\?  \\+1" (buffer-string)))
     (kill-buffer)
     (let ((default-directory repo))
@@ -184,7 +149,7 @@ it is the same review, pulled again."
 threads GitHub dropped, keeps what was not sent, and follows a push."
   (diff-review-github-test--with-pr
     (diff-review-github-pr 5)
-    (let ((t1 (diff-review-github-test--by-node "C1")))
+    (let ((t1 (diff-review-forge-test--by-node "C1")))
       (diff-review--change-comment
        t1 (lambda (c)
             (puthash "resolved" t c)
@@ -206,18 +171,18 @@ threads GitHub dropped, keeps what was not sent, and follows a push."
     (should-not (equal diff-review--tip head))
     (should (equal (mapcar (lambda (f) (plist-get f :path)) diff-review--files)
                    '("long.txt" "new.txt")))
-    (should-not (diff-review-github-test--by-node "C3"))
-    (let ((t1 (diff-review-github-test--by-node "C1")))
+    (should-not (diff-review-forge-test--by-node "C3"))
+    (let ((t1 (diff-review-forge-test--by-node "C1")))
       (should (gethash "resolved" t1))  ; resolved here, unchanged on GitHub
       (should (equal (mapcar (lambda (r) (gethash "body" r)) (gethash "replies" t1))
                      '("Because." "Agreed." "Not yet sent."))))
-    (should (gethash "resolved" (diff-review-github-test--by-node "C5")))
+    (should (gethash "resolved" (diff-review-forge-test--by-node "C5")))
     (should (seq-find (lambda (c) (equal (gethash "body" c) "Mine, not sent."))
                       diff-review--comments))
     ;; Reopened on GitHub: GitHub's change wins.
     (setf (alist-get 'isResolved (cadr diff-review-github-test--threads)) :false)
     (diff-review-forge-pull)
-    (should-not (gethash "resolved" (diff-review-github-test--by-node "C5")))))
+    (should-not (gethash "resolved" (diff-review-forge-test--by-node "C5")))))
 
 (ert-deftest diff-review-github-test-submit ()
   "Submit sends new threads as one review with the verdict, a thread outside
@@ -232,13 +197,13 @@ body, replies and a resolve; then there is nothing left to send."
                                 "Not in the pull request.")
       (diff-review--add-comment nil nil nil "Overall good."))
     (diff-review--change-comment
-     (diff-review-github-test--by-node "C1")
+     (diff-review-forge-test--by-node "C1")
      (lambda (c)
        (puthash "resolved" t c)
        (puthash "replies" (vconcat (gethash "replies" c) (vector (diff-review--message "me" "Ok.")))
                 c)))
     (diff-review--change-comment
-     (diff-review-github-test--by-node "IC1")
+     (diff-review-forge-test--by-node "IC1")
      (lambda (c) (puthash "replies" (vector (diff-review--message "me" "Pong.")) c)))
     (diff-review-approve)
     (diff-review-forge-submit)
@@ -275,16 +240,5 @@ body, replies and a resolve; then there is nothing left to send."
                    '("C1" "C3" "IC1" "R1")))
     (should (equal (cadr (should-error (diff-review-forge-submit) :type 'user-error))
                    "Nothing to send to #5"))))
-
-(ert-deftest diff-review-github-test-not-a-pull-request ()
-  "Pull and submit refuse a review of no pull request, and of a backend
-that is not on the load path."
-  (diff-review-test--with-repo
-    (diff-review-test--open repo)
-    (should-error (diff-review-forge-pull) :type 'user-error)
-    (should-error (diff-review-forge-submit) :type 'user-error)
-    (diff-review-forge-mark diff-review--data "backend" "nope" "number" 1)
-    (should (equal (cadr (should-error (diff-review-forge-pull) :type 'user-error))
-                   "No backend nope: diff-review-nope is not on the load path"))))
 
 ;;; diff-review-github-test.el ends here

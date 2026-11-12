@@ -38,39 +38,16 @@ A fork's is usually \"upstream\"."
 
 ;;;; gh
 
-(defun diff-review-github--repo (url)
-  "The HOST/OWNER/REPO remote URL names, or nil for a URL with no host."
-  (and (string-match (concat "\\`\\(?:[a-z+]+://\\)?\\(?:[^@/]+@\\)?\\([^:/]+\\)"
-                             "\\(?::[0-9]+\\)?[:/]\\([^/]+/[^/]+?\\)\\(?:\\.git\\)?/?\\'")
-                     url)
-       (concat (match-string 1 url) "/" (match-string 2 url))))
-
 (defun diff-review-github--gh (input &rest args)
   "Run gh with ARGS, INPUT on its stdin; its JSON, parsed, or nil for none.
 `default-directory' is in the repository.  The GitHub repository is
 `diff-review-github-remote''s, not the one gh would pick among several."
-  (let* ((repo (diff-review-github--repo
-                (diff-review--git-at default-directory "remote" "get-url"
-                                     diff-review-github-remote)))
-         (process-environment
-          (append (list "GH_PROMPT_DISABLED=1")
-                  (and repo (list (concat "GH_REPO=" repo)
-                                  (concat "GH_HOST=" (car (split-string repo "/")))))
-                  process-environment))
-         (errors (make-temp-file "diff-review-gh")))
-    (unwind-protect
-        (with-temp-buffer
-          (when input (insert input))
-          (unless (eql 0 (apply #'call-process-region (point-min) (point-max)
-                                diff-review-github-program t (list t errors) nil args))
-            (user-error "GitHub: gh %s: %s" (string-join args " ")
-                        (with-temp-buffer
-                          (insert-file-contents errors)
-                          (string-trim (buffer-string)))))
-          (goto-char (point-min))
-          (skip-chars-forward " \t\n")
-          (and (not (eobp)) (json-parse-buffer :null-object nil :false-object nil)))
-      (delete-file errors))))
+  (let ((remote (diff-review-forge--remote diff-review-github-remote)))
+    (apply #'diff-review-forge--run diff-review-github-program
+           (cons "GH_PROMPT_DISABLED=1"
+                 (and remote (list (format "GH_REPO=%s/%s" (car remote) (cdr remote))
+                                   (concat "GH_HOST=" (car remote)))))
+           input args)))
 
 (defun diff-review-github--graphql (query variables)
   "Run QUERY with VARIABLES, an alist, on GitHub; the response."
@@ -154,22 +131,6 @@ the review follows them to the tip, and says when they are outdated.
                             (append (gethash "reviews" pr) (gethash "comments" pr) nil)))
         (lambda (a b) (string< (or (gethash "at" a) "") (or (gethash "at" b) "")))))
 
-(defun diff-review-github--fetch-commits (threads)
-  "Fetch the commits THREADS were written on that git has not.
-A force push leaves them out of the pull request's head; GitHub still
-serves them, or the threads draw where they were."
-  (let ((missing (seq-remove
-                  (lambda (oid) (diff-review--git-maybe "cat-file" "-e" (concat oid "^{commit}")))
-                  (seq-uniq (delq nil (mapcar (lambda (thread)
-                                                (diff-review-forge--get
-                                                 (seq-first (diff-review-forge--get
-                                                             thread "comments" "nodes"))
-                                                 "originalCommit" "oid"))
-                                              threads))))))
-    (when missing
-      (apply #'diff-review--git-maybe "fetch" "--quiet" "--no-tags" diff-review-github-remote
-             missing))))
-
 (cl-defmethod diff-review-forge-fetch ((_ (eql 'github)) number)
   "Fetch pull request NUMBER into refs/pull/NUMBER, and its base; its threads.
 They are its review threads, then its comments and reviews' bodies."
@@ -182,7 +143,12 @@ They are its review threads, then its comments and reviews' bodies."
                          (format "+refs/pull/%d/head:refs/pull/%d" number number)
                          (format "+refs/heads/%s:refs/remotes/%s"
                                  (gethash "baseRefName" pr) base))
-    (diff-review-github--fetch-commits threads)
+    (diff-review-forge--fetch-commits
+     remote (mapcar (lambda (thread)
+                      (diff-review-forge--get
+                       (seq-first (diff-review-forge--get thread "comments" "nodes"))
+                       "originalCommit" "oid"))
+                    threads))
     (list :head (format "pull/%d" number)
           :base base
           :threads (append (mapcar (lambda (thread)
@@ -222,40 +188,14 @@ The new side, with three lines of context: (FIRST . LAST) each."
 otherwise, LINES as the tip has them or as written, nil for none; or
 \(body) for no path, or one the pull request leaves alone.  The review
 buffer must be current."
-  (let* ((path (gethash "path" comment))
-         (index (and path (diff-review--file-index path)))
-         (file (and index (diff-review--file index)))
-         (written (diff-review--comment-lines comment))
-         (blob (gethash "blob" comment))
-         (tip-blob (and file (diff-review--git-maybe "rev-parse" "--verify" "--quiet"
-                                                     (concat diff-review--tip ":" path))))
-         (lines (and written
-                     (if (and blob tip-blob (not (equal blob tip-blob)))
-                         (let ((hunks (diff-review--hunks-between blob tip-blob)))
-                           (and (listp hunks) (diff-review--map-lines hunks written)))
-                       written))))
-    (cond ((or (null file) (equal (plist-get file :status) " ")) '(body))
-          ((and lines tip-blob
+  (let ((file (diff-review-forge--file comment))
+        (lines (diff-review-forge--tip-lines comment)))
+    (cond ((null file) '(body))
+          ((and lines
                 (seq-some (lambda (h) (and (<= (car h) (car lines)) (<= (cdr lines) (cdr h))))
                           (diff-review-github--hunks file)))
            (cons 'line lines))
-          (t (cons 'file (or lines written))))))
-
-(defun diff-review-github--text (comment &optional where)
-  "The text of COMMENT for GitHub, its replies after it, WHERE before it."
-  (string-join
-   (cons (concat where (gethash "body" comment))
-         (mapcar (lambda (r) (format "**%s**: %s" (gethash "author" r) (gethash "body" r)))
-                 (gethash "replies" comment)))
-   "\n\n"))
-
-(defun diff-review-github--where (path lines)
-  "PATH and LINES, (FIRST . LAST) or nil, as a body begins with them."
-  (concat (and path (format "`%s` " path))
-          (cond ((null lines) "")
-                ((= (car lines) (cdr lines)) (format "line %d" (car lines)))
-                (t (format "lines %d-%d" (car lines) (cdr lines))))
-          (and (or path lines) ": ")))
+          (t (cons 'file (or lines (diff-review--comment-lines comment)))))))
 
 (cl-defmethod diff-review-forge-send ((_ (eql 'github)) number new replies resolves verdict)
   "Send to pull request NUMBER: NEW threads, REPLIES, RESOLVES and VERDICT.
@@ -303,7 +243,7 @@ request's hunks goes on its file, its lines in its text."
        (gethash "node_id"
                 (diff-review-github--post
                  (concat prefix "/comments")
-                 `((body . ,(diff-review-github--text thread (diff-review-github--where nil at)))
+                 `((body . ,(diff-review-forge--text thread (diff-review-forge--where nil at)))
                    (commit_id . ,diff-review--tip)
                    (path . ,(gethash "path" thread))
                    (subject_type . "file"))))))
@@ -319,15 +259,15 @@ request's hunks goes on its file, its lines in its text."
                 ,@(and body
                        `((body . ,(mapconcat
                                    (pcase-lambda (`(,c . ,_))
-                                     (diff-review-github--text
-                                      c (diff-review-github--where
+                                     (diff-review-forge--text
+                                      c (diff-review-forge--where
                                          (gethash "path" c) (diff-review--comment-lines c))))
                                    body "\n\n"))))
                 (comments
                  . ,(vconcat
                      (mapcar (pcase-lambda (`(,c line ,first . ,last))
                                `((path . ,(gethash "path" c))
-                                 (body . ,(diff-review-github--text c))
+                                 (body . ,(diff-review-forge--text c))
                                  (line . ,last) (side . "RIGHT")
                                  ,@(and (/= first last)
                                         `((start_line . ,first) (start_side . "RIGHT")))))
@@ -339,24 +279,23 @@ request's hunks goes on its file, its lines in its text."
 
 (defun diff-review-github--read-pr ()
   "Read a pull request of `diff-review-github-remote''s repository: its number."
-  (let* ((default-directory (diff-review--root-here))
-         (prs (diff-review-github--gh nil "pr" "list" "--json"
-                                      "number,title,headRefName,author" "--limit" "100"))
-         (choice (completing-read
-                  "Review pull request: "
-                  (mapcar (lambda (pr)
-                            (format "#%d %s  (%s, %s)" (gethash "number" pr)
-                                    (gethash "title" pr) (gethash "headRefName" pr)
-                                    (diff-review-forge--get pr "author" "login")))
-                          prs))))
-    (if (string-match "\\`\\s-*#?\\([0-9]+\\)" choice)
-        (string-to-number (match-string 1 choice))
-      (user-error "No pull request number in %S" choice))))
+  (let ((default-directory (diff-review--root-here)))
+    (diff-review-forge-read
+     "Review pull request: "
+     (lambda ()
+       (mapcar (lambda (pr)
+                 (cons (format "#%d %s  (%s, %s)" (gethash "number" pr)
+                               (gethash "title" pr) (gethash "headRefName" pr)
+                               (diff-review-forge--get pr "author" "login"))
+                       (gethash "number" pr)))
+               (diff-review-github--gh nil "pr" "list" "--json"
+                                       "number,title,headRefName,author" "--limit" "100"))))))
 
 ;;;###autoload
 (defun diff-review-github-pr (number)
   "Review pull request NUMBER of `diff-review-github-remote''s GitHub repository.
-Interactively, pick among the open ones, or type a number.  The review
+Interactively, pick among the open ones or type a number; with a prefix
+argument, read the number alone.  The review
 is review/github/NUMBER.json under the common git directory, following
 refs/pull/NUMBER; `diff-review-forge-pull' and `diff-review-forge-submit'
 keep it and GitHub in step."
