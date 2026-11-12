@@ -41,15 +41,18 @@ A fork's is usually \"upstream\"."
   :group 'diff-review)
 
 (defun diff-review-gitlab--api (method path &optional body pages)
-  "Call METHOD on PATH, under the project, in GitLab's API; the response.
-BODY is an alist sent as JSON; PAGES, every page of a list.  The project
-is `diff-review-gitlab-remote''s, not the one glab would pick among
-several.  `default-directory' is in the repository."
+  "Call METHOD on PATH in GitLab's API; the response.
+PATH is under the project, or the API's root when it starts with a
+slash.  BODY is an alist sent as JSON; PAGES, every page of a list.  The
+project is `diff-review-gitlab-remote''s, not the one glab would pick
+among several.  `default-directory' is in the repository."
   (let ((remote (diff-review-forge--remote diff-review-gitlab-remote)))
     (apply #'diff-review-forge--run diff-review-gitlab-program nil
            (and body (json-serialize body))
            "api" "--method" method
-           (concat "projects/" (if remote (url-hexify-string (cdr remote)) ":id") "/" path)
+           (if (string-prefix-p "/" path)
+               (substring path 1)
+             (concat "projects/" (if remote (url-hexify-string (cdr remote)) ":id") "/" path))
            (append (and remote (list "--hostname" (car remote)))
                    (and body '("--input" "-"))
                    (and pages '("--paginate"))))))
@@ -120,6 +123,15 @@ Its threads are its discussions."
                     discussions))
     (list :head (format "merge-requests/%d" number)
           :base base
+          :me (gethash "username" (diff-review-gitlab--api "GET" "/user"))
+          ;; GitLab names no commit for an approval: it holds until a push
+          ;; resets it, if the project says so.
+          :verdicts (mapcar (lambda (a)
+                              (list :by (diff-review-forge--get a "user" "username")
+                                    :state "approved"))
+                            (gethash "approved_by"
+                                     (diff-review-gitlab--api
+                                      "GET" (format "merge_requests/%d/approvals" number))))
           :threads (delq nil (mapcar #'diff-review-gitlab--discussion discussions)))))
 
 ;;;; Send

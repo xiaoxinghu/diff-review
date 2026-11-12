@@ -136,7 +136,10 @@ are threads on the review as a whole.
 
 `M-x diff-review-forge-pull` fetches again and brings the threads up to the
 forge's: its text wins, and its resolved state once it changed there.
-Threads and replies not sent yet stay.
+Threads and replies not sent yet stay. The other reviewers' verdicts join
+the summary, "alice approved, bob requested changes", one on a commit the
+head has moved past greyed; your own on the forge becomes the review's,
+unless one you gave here on the tip waits to be sent.
 
 `M-x diff-review-forge-submit` asks, then sends what was written here: new
 threads, replies, threads resolved or reopened, and the verdict (`A` or `C`).
@@ -144,14 +147,15 @@ A thread on a file the pull request leaves alone goes with its path and
 lines in its text.
 
 - On GitHub the new threads go as one review on the tip the review shows,
-  the verdict its event and the review-wide threads its body. GitHub takes
-  a line comment only inside the pull request's hunks, so a thread outside
-  them goes on its file with its lines in the text.
+  the verdict its event and the review-wide threads its body; with no body,
+  a request for changes asks for its reason, as GitHub requires one. GitHub
+  takes a line comment only inside the pull request's hunks, so a thread
+  outside them goes on its file with its lines in the text.
 - On GitLab each new thread is a discussion on its last line at the tip, on
   any line of the file, with a range in its text; one whose lines the tip
   changed goes on its file. Approving approves; GitLab's API has no request
   for changes, so `C` revokes an approval sent before and the threads say
-  the rest.
+  the rest, and only approvals come back on a pull.
 
 A fork's pull requests are usually on `upstream`, and a CLI that `exec-path`
 does not find can be named in full:

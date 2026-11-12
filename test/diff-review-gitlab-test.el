@@ -16,6 +16,7 @@
 
 (defvar diff-review-gitlab-test--discussions nil "The fake merge request's discussions, as Lisp.")
 (defvar diff-review-gitlab-test--calls nil "The fake API's calls, newest first: (METHOD PATH BODY).")
+(defvar diff-review-gitlab-test--approvers nil "Who approved the fake merge request.")
 
 (defun diff-review-gitlab-test--api (method path &optional body _pages)
   "The fake GitLab API: answer METHOD on PATH, recording them with BODY."
@@ -24,6 +25,10 @@
   (diff-review-forge-test--json
    (pcase (list method path)
      ('("GET" "merge_requests/7") '((iid . 7) (target_branch . "main")))
+     ('("GET" "/user") '((username . "me")))
+     ('("GET" "merge_requests/7/approvals")
+      `((approved_by . ,(vconcat (mapcar (lambda (by) `((user . ((username . ,by)))))
+                                         diff-review-gitlab-test--approvers)))))
      ('("GET" "merge_requests/7/discussions?per_page=100")
       (vconcat diff-review-gitlab-test--discussions))
      ('("GET" "merge_requests/7/versions")
@@ -52,6 +57,7 @@ the line 2 the base had; D3 on no line; D4 only system notes."
                                  (old_path . "long.txt") (new_path . "long.txt")
                                  (position_type . "text") (,side . ,line))))))
             (diff-review-gitlab-test--calls nil)
+            (diff-review-gitlab-test--approvers '("alice"))
             (diff-review-gitlab-test--discussions
              `(((id . "D1")
                 (notes . [,(apply #'diff-review-gitlab-test--note 101 "alice" "Why shout?"
@@ -174,5 +180,17 @@ its lines as written in its text, on the version of the new tip."
       (should (equal (gethash "position_type" position) "file"))
       (should (equal (gethash "head_sha" position) diff-review--tip))
       (should (equal (gethash "body" posted) "line 2: Shouting.")))))
+
+(ert-deftest diff-review-gitlab-test-approvals ()
+  "Others' approvals show in the summary; the reviewer's own becomes the
+review's verdict, on the tip, and is not sent again."
+  (diff-review-gitlab-test--with-mr
+    (setq diff-review-gitlab-test--approvers '("alice" "me"))
+    (diff-review-gitlab-mr 7)
+    (should (string-match-p "  alice approved$" (diff-review--summary)))
+    (should (equal (diff-review-forge--get diff-review--data "verdict" "state") "approved"))
+    (should (equal (diff-review-forge--get diff-review--data "verdict" "head") head))
+    (should (equal (cadr (should-error (diff-review-forge-submit) :type 'user-error))
+                   "Nothing to send to #7"))))
 
 ;;; diff-review-gitlab-test.el ends here

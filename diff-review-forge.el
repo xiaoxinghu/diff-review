@@ -38,8 +38,11 @@ A plist: :head, the ref the head was fetched into; :base, the base as a
 revision; :threads, the forge's threads in the review's own format.  Each
 thread has a \"forge\" table, made by `diff-review-forge-message': \"node\",
 the forge's id for it; \"thread\" when its replies are on the forge; and
-\"resolved\", its state there, when it resolves there.  `default-directory'
-is the root.")
+\"resolved\", its state there, when it resolves there.  :verdicts, the
+reviewers' last words, (:by NAME :state STATE :head COMMIT) each, STATE
+\"approved\" or \"changes\" and COMMIT nil when it holds for any; and
+:me, the forge's name for whoever runs this.  `default-directory' is the
+root.")
 
 (cl-defgeneric diff-review-forge-send (backend number new replies resolves verdict)
   "Send to BACKEND's pull request NUMBER what was written in the review.
@@ -247,20 +250,78 @@ be current."
     (setq diff-review--comments (vconcat (nreverse kept)))
     (puthash "comments" diff-review--comments diff-review--data)
     (puthash "base" (plist-get fetched :base) diff-review--data)
+    (let* ((me (plist-get fetched :me))
+           (verdicts (plist-get fetched :verdicts))
+           (mine (seq-find (lambda (v) (equal (plist-get v :by) me)) verdicts)))
+      (diff-review-forge-mark
+       diff-review--data "verdicts"
+       (vconcat (mapcar (lambda (v)
+                          (let ((table (make-hash-table :test #'equal)))
+                            (puthash "by" (plist-get v :by) table)
+                            (puthash "state" (plist-get v :state) table)
+                            (when (plist-get v :head) (puthash "head" (plist-get v :head) table))
+                            table))
+                        (remq mine verdicts))))
+      (when mine
+        (diff-review-forge--adopt
+         mine (diff-review--git "rev-parse" (concat (plist-get fetched :head) "^{commit}")))))
     (diff-review--write)
     (revert-buffer)))
+
+(defun diff-review-forge--unsent-p (verdict)
+  "Whether VERDICT changed since it went to the forge, or came from it."
+  (let ((sent (diff-review-forge--get verdict "forge")))
+    (not (and sent
+              (equal (gethash "state" sent) (gethash "state" verdict))
+              (equal (gethash "head" sent) (gethash "head" verdict))))))
 
 (defun diff-review-forge--verdict ()
   "The verdict's state when the forge does not have it yet, else nil.
 A stale verdict has none.  The review buffer must be current."
-  (let* ((verdict (gethash "verdict" diff-review--data))
-         (sent (diff-review-forge--get verdict "forge")))
+  (let ((verdict (gethash "verdict" diff-review--data)))
     (and (hash-table-p verdict)
          (not (eq (diff-review--turn) 'reviewer))
-         (not (and sent
-                   (equal (gethash "state" sent) (gethash "state" verdict))
-                   (equal (gethash "head" sent) (gethash "head" verdict))))
+         (diff-review-forge--unsent-p verdict)
          (gethash "state" verdict))))
+
+(defun diff-review-forge--adopt (verdict tip)
+  "Make VERDICT, this reviewer's last word on the forge, the review's.
+A verdict given here on TIP and not sent yet stays: it is the newer.
+The review buffer must be current."
+  (let ((local (gethash "verdict" diff-review--data))
+        (state (plist-get verdict :state))
+        (head (or (plist-get verdict :head) tip)))
+    (unless (and (hash-table-p local)
+                 (equal (gethash "head" local) tip)
+                 (diff-review-forge--unsent-p local))
+      (let ((table (if (hash-table-p local) local (make-hash-table :test #'equal))))
+        (unless (and (equal (gethash "state" table) state) (equal (gethash "head" table) head))
+          (puthash "state" state table)
+          (puthash "head" head table)
+          (puthash "by" (plist-get verdict :by) table)
+          (puthash "at" (format-time-string "%FT%T%:z") table))
+        (diff-review-forge-mark table "state" state "head" head)
+        (puthash "verdict" table diff-review--data)))))
+
+(defun diff-review-forge--others ()
+  "The other reviewers' verdicts, as the summary shows them, or nil.
+One on a commit the head has moved past is shadowed.  For
+`diff-review-summary-functions'."
+  (when-let* ((verdicts (diff-review-forge--get diff-review--data "forge" "verdicts"))
+              ((> (length verdicts) 0)))
+    (mapconcat (lambda (v)
+                 (let ((head (gethash "head" v))
+                       (approved (equal (gethash "state" v) "approved")))
+                   (propertize (concat (gethash "by" v)
+                                       (if approved " approved" " requested changes"))
+                               'face (cond ((and head (not (equal head (or diff-review--moved
+                                                                           diff-review--tip))))
+                                            'shadow)
+                                           (approved 'success)
+                                           (t 'warning)))))
+               verdicts ", ")))
+
+(add-hook 'diff-review-summary-functions #'diff-review-forge--others)
 
 ;;;; Commands
 

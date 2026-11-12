@@ -1627,5 +1627,13 @@ file, the overview, the sidebar's and the file's headers."
     (should-error (diff-review-approve) :type 'user-error)
     (should-not (diff-review-test--verdict (current-buffer)))))
 
+(ert-deftest diff-review-test-summary-functions ()
+  "What `diff-review-summary-functions' return joins the summary, nil adding nothing."
+  (diff-review-test--with-repo
+    (let ((diff-review-summary-functions
+           (list (lambda () nil) (lambda () (format "%d files" (length diff-review--files))))))
+      (diff-review-test--open repo)
+      (should (string-match-p "  2 files$" (diff-review--summary))))))
+
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here

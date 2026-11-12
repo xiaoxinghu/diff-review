@@ -29,7 +29,8 @@
         (if (string-prefix-p "mutation" (gethash "query" sent))
             '((data . ((addPullRequestReviewThreadReply . ((comment . ((id . "NR")))))
                     (resolveReviewThread . ((thread . ((id . "T1"))))))))
-          `((data . ((node . ((reviewThreads
+          `((data . ((viewer . ((login . "me")))
+                     (node . ((reviewThreads
                                . ((pageInfo . ((hasNextPage . :false)))
                                   (nodes . ,(vconcat diff-review-github-test--threads))))))))))))
       (`("api" "--method" "POST" . ,_)
@@ -61,7 +62,8 @@ for a comment whose id outgrew it, as new ones have."
               (reviews . [((id . "R1") (author . ((login . "alice"))) (body . "Overall fine.")
                            (state . "COMMENTED") (submittedAt . "2026-11-01T11:00:00Z"))
                           ((id . "R2") (author . ((login . "alice"))) (body . "")
-                           (state . "APPROVED") (submittedAt . "2026-11-01T12:00:00Z"))])
+                           (state . "APPROVED") (submittedAt . "2026-11-01T12:00:00Z")
+                           (commit . ((oid . ,head))))])
               (comments . [((id . "IC1") (author . ((login . "bob"))) (body . "Ping.")
                             (createdAt . "2026-11-01T09:00:00Z"))])))
            (diff-review-github-test--threads
@@ -240,5 +242,49 @@ body, replies and a resolve; then there is nothing left to send."
                    '("C1" "C3" "IC1" "R1")))
     (should (equal (cadr (should-error (diff-review-forge-submit) :type 'user-error))
                    "Nothing to send to #5"))))
+
+(defun diff-review-github-test--review (by state &optional commit)
+  "Add a review by BY, its STATE, on COMMIT, to the fake pull request."
+  (setf (alist-get 'reviews diff-review-github-test--pr)
+        (vconcat (alist-get 'reviews diff-review-github-test--pr)
+                 (vector `((id . ,(format "R%s" by)) (author . ((login . ,by))) (body . "")
+                           (state . ,state) (submittedAt . "2026-11-02T00:00:00Z")
+                           ,@(and commit `((commit . ((oid . ,commit))))))))))
+
+(ert-deftest diff-review-github-test-verdicts ()
+  "Others' verdicts show in the summary, one on an old head shadowed; the
+reviewer's own on GitHub becomes the review's and is not sent again, unless
+one given here on the tip waits to be sent."
+  (diff-review-github-test--with-pr
+    (diff-review-github-test--review "bob" "CHANGES_REQUESTED" "0000000")
+    (diff-review-github-test--review "me" "APPROVED" head)
+    (diff-review-github-pr 5)
+    (let ((summary (diff-review--summary)))
+      (should (string-match "alice approved, bob requested changes" summary))
+      (should (eq (get-text-property (match-beginning 0) 'face summary) 'success))
+      (should (eq (get-text-property (- (match-end 0) 1) 'face summary) 'shadow)))
+    (should (equal (diff-review-forge--get diff-review--data "verdict" "state") "approved"))
+    (should (eq (diff-review--turn) 'merge))
+    (should (equal (cadr (should-error (diff-review-forge-submit) :type 'user-error))
+                   "Nothing to send to #5"))
+    ;; Changes asked here wait to be sent: a pull keeps them.
+    (diff-review-request-changes)
+    (diff-review-forge-pull)
+    (should (equal (diff-review-forge--get diff-review--data "verdict" "state") "changes"))))
+
+(ert-deftest diff-review-github-test-changes-need-a-reason ()
+  "A request for changes with no review-wide thread asks for a reason, and
+sends nothing without one."
+  (diff-review-github-test--with-pr
+    (diff-review-github-pr 5)
+    (diff-review-request-changes)
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) " ")))
+      (should-error (diff-review-forge-submit) :type 'user-error))
+    (should-not (diff-review-github-test--sent "repos/{owner}/{repo}/pulls/5/reviews"))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "Rename it.")))
+      (diff-review-forge-submit))
+    (let ((review (diff-review-github-test--sent "repos/{owner}/{repo}/pulls/5/reviews")))
+      (should (equal (gethash "event" review) "REQUEST_CHANGES"))
+      (should (equal (gethash "body" review) "Rename it.")))))
 
 ;;; diff-review-github-test.el ends here

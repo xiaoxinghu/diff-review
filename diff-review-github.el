@@ -63,28 +63,32 @@ A fork's is usually \"upstream\"."
 
 (defconst diff-review-github--threads-query
   "query($id: ID!, $after: String) {
+  viewer { login }
   node(id: $id) { ... on PullRequest {
     reviewThreads(first: 50, after: $after) {
       pageInfo { hasNextPage endCursor }
       nodes { id isResolved path diffSide originalLine originalStartLine
         comments(first: 100) { nodes {
           id body createdAt author { login } originalCommit { oid } } } } } } } }"
-  "The review threads of a pull request, by its node id, a page at a time.")
+  "A page of a pull request's review threads, by its node id; who asks.")
 
 (defun diff-review-github--threads (id)
-  "The review threads of the pull request with node ID."
-  (let (threads after more)
+  "The review threads of the pull request with node ID: (LOGIN . THREADS).
+LOGIN is whoever asks."
+  (let (threads after more login)
     (while (progn
-             (let ((page (diff-review-forge--get
-                          (diff-review-github--graphql
-                           diff-review-github--threads-query
-                           `((id . ,id) (after . ,(or after :null))))
-                          "data" "node" "reviewThreads")))
-               (setq threads (append threads (gethash "nodes" page) nil)
+             (let* ((data (diff-review-forge--get
+                           (diff-review-github--graphql
+                            diff-review-github--threads-query
+                            `((id . ,id) (after . ,(or after :null))))
+                           "data"))
+                    (page (diff-review-forge--get data "node" "reviewThreads")))
+               (setq login (diff-review-forge--get data "viewer" "login")
+                     threads (append threads (gethash "nodes" page) nil)
                      after (diff-review-forge--get page "pageInfo" "endCursor")
                      more (diff-review-forge--get page "pageInfo" "hasNextPage")))
              more))
-    threads))
+    (cons login threads)))
 
 (defun diff-review-github--message (comment)
   "COMMENT from GitHub as a message of the review."
@@ -131,6 +135,23 @@ the review follows them to the tip, and says when they are outdated.
                             (append (gethash "reviews" pr) (gethash "comments" pr) nil)))
         (lambda (a b) (string< (or (gethash "at" a) "") (or (gethash "at" b) "")))))
 
+(defun diff-review-github--verdicts (reviews)
+  "Each author's last approval or request for changes among REVIEWS.
+A comment changes no one's; a dismissed review is no verdict."
+  (let (latest)
+    (dolist (r (sort (append reviews nil)
+                     (lambda (a b) (string< (or (gethash "submittedAt" a) "")
+                                            (or (gethash "submittedAt" b) "")))))
+      (let ((by (diff-review-forge--get r "author" "login"))
+            (state (pcase (gethash "state" r)
+                     ("APPROVED" "approved")
+                     ("CHANGES_REQUESTED" "changes"))))
+        (when state
+          (setq latest (cons (list :by by :state state
+                                   :head (diff-review-forge--get r "commit" "oid"))
+                             (seq-remove (lambda (v) (equal (plist-get v :by) by)) latest))))))
+    (nreverse latest)))
+
 (cl-defmethod diff-review-forge-fetch ((_ (eql 'github)) number)
   "Fetch pull request NUMBER into refs/pull/NUMBER, and its base; its threads.
 They are its review threads, then its comments and reviews' bodies."
@@ -138,7 +159,8 @@ They are its review threads, then its comments and reviews' bodies."
                                      "--json" "id,baseRefName,reviews,comments"))
          (remote diff-review-github-remote)
          (base (concat remote "/" (gethash "baseRefName" pr)))
-         (threads (diff-review-github--threads (gethash "id" pr))))
+         (asked (diff-review-github--threads (gethash "id" pr)))
+         (threads (cdr asked)))
     (diff-review--git-at default-directory "fetch" "--quiet" "--no-tags" remote
                          (format "+refs/pull/%d/head:refs/pull/%d" number number)
                          (format "+refs/heads/%s:refs/remotes/%s"
@@ -151,6 +173,8 @@ They are its review threads, then its comments and reviews' bodies."
                     threads))
     (list :head (format "pull/%d" number)
           :base base
+          :me (car asked)
+          :verdicts (diff-review-github--verdicts (gethash "reviews" pr))
           :threads (append (mapcar (lambda (thread)
                                      (diff-review-github--review-thread thread base))
                                    threads)
@@ -201,12 +225,19 @@ buffer must be current."
   "Send to pull request NUMBER: NEW threads, REPLIES, RESOLVES and VERDICT.
 New threads go as one review, VERDICT its event, the threads on no
 path, or on one it leaves alone, its body.  A thread outside the pull
-request's hunks goes on its file, its lines in its text."
+request's hunks goes on its file, its lines in its text.  GitHub wants
+a reason with a request for changes: with no body, it is asked for."
   (let* ((prefix (format "repos/{owner}/{repo}/pulls/%d" number))
          (placed (mapcar (lambda (c) (cons c (diff-review-github--placement c))) new))
          (lines (seq-filter (lambda (p) (eq (cadr p) 'line)) placed))
          (files (seq-filter (lambda (p) (eq (cadr p) 'file)) placed))
-         (body (seq-filter (lambda (p) (eq (cadr p) 'body)) placed)))
+         (body (seq-filter (lambda (p) (eq (cadr p) 'body)) placed))
+         ;; Asked before anything goes, so a refusal sends nothing.
+         (reason (and (equal verdict "changes") (null body)
+                      (let ((text (string-trim (read-string "Request changes, saying: "))))
+                        (when (string-empty-p text)
+                          (user-error "GitHub asks for a reason to request changes"))
+                        text))))
     (pcase-dolist (`(,thread . ,reply) replies)
       (let ((id (diff-review-forge--get thread "forge" "thread")))
         (cond
@@ -256,13 +287,14 @@ request's hunks goes on its file, its lines in its text."
                             ("approved" "APPROVE")
                             ("changes" "REQUEST_CHANGES")
                             (_ "COMMENT")))
-                ,@(and body
-                       `((body . ,(mapconcat
-                                   (pcase-lambda (`(,c . ,_))
-                                     (diff-review-forge--text
-                                      c (diff-review-forge--where
-                                         (gethash "path" c) (diff-review--comment-lines c))))
-                                   body "\n\n"))))
+                ,@(and (or body reason)
+                       `((body . ,(or reason
+                                      (mapconcat
+                                       (pcase-lambda (`(,c . ,_))
+                                         (diff-review-forge--text
+                                          c (diff-review-forge--where
+                                             (gethash "path" c) (diff-review--comment-lines c))))
+                                       body "\n\n")))))
                 (comments
                  . ,(vconcat
                      (mapcar (pcase-lambda (`(,c line ,first . ,last))

@@ -697,11 +697,18 @@ then the thread is outdated, as a pull request page says."
   "The sum of KEY over the plists FILES."
   (apply #'+ (mapcar (lambda (f) (plist-get f key)) files)))
 
+(defvar diff-review-summary-functions nil
+  "Functions that add to a review's summary line, after its verdict.
+Each is called in the review buffer and returns a string, or nil.")
+
 (defun diff-review--summary ()
   "The viewed, line and comment counts of the review, and its verdict."
   (let ((n (length diff-review--comments))
         (open (diff-review--open-count diff-review--comments))
-        (verdict (diff-review--verdict-text)))
+        (verdict (diff-review--verdict-text))
+        extra)
+    (run-hook-wrapped 'diff-review-summary-functions
+                      (lambda (f) (when-let* ((s (funcall f))) (push (concat "  " s) extra)) nil))
     (concat
      (format "%d/%d viewed  %s"
              (seq-count #'diff-review--viewed-p diff-review--files)
@@ -711,6 +718,7 @@ then the thread is outdated, as a pull request page says."
      (if (zerop n) ""
        (format "  %d comment%s, %d open" n (if (= n 1) "" "s") open))
      (if (string-empty-p verdict) "" (concat "  " verdict))
+     (apply #'concat (nreverse extra))
      (if (null diff-review--moved) ""
        (concat "  "
                (propertize (format "%s moved to %s," diff-review--head-name
