@@ -97,7 +97,7 @@ The pull request changes line 2 of long.txt, twenty lines on main."
 
 (defun diff-review-github-test--by-node (node)
   "The review's thread whose GitHub node is NODE."
-  (seq-find (lambda (c) (equal (diff-review-github--node c) node)) diff-review--comments))
+  (seq-find (lambda (c) (equal (diff-review-forge--node c) node)) diff-review--comments))
 
 (defun diff-review-github-test--sent (endpoint)
   "What the fake gh was last sent at ENDPOINT, or by the graphql query naming it."
@@ -156,10 +156,10 @@ it is the same review, pulled again."
     (should (equal diff-review--head "pull/5"))
     (should (equal diff-review--tip head))
     (should (equal (gethash "base" diff-review--data) "origin/main"))
-    (should (equal (diff-review-github--get diff-review--data "github" "number") 5))
+    (should (equal (diff-review-forge--get diff-review--data "forge" "number") 5))
     (should (equal (mapcar (lambda (f) (plist-get f :path)) diff-review--files) '("long.txt")))
     ;; R2 is an approval with no body: nothing to read.
-    (should (equal (mapcar #'diff-review-github--node diff-review--comments)
+    (should (equal (mapcar #'diff-review-forge--node diff-review--comments)
                    '("C1" "C3" "IC1" "R1")))
     (let ((t1 (diff-review-github-test--by-node "C1")))
       (should (equal (gethash "lines" t1) [2 2]))
@@ -167,7 +167,7 @@ it is the same review, pulled again."
       (should (equal (gethash "author" t1) "alice"))
       (should (equal (mapcar (lambda (r) (gethash "body" r)) (gethash "replies" t1)) '("Because.")))
       (should-not (gethash "resolved" t1))
-      (should (equal (diff-review-github--get t1 "github" "thread") "T1")))
+      (should (equal (diff-review-forge--get t1 "forge" "thread") "T1")))
 
     (let ((t2 (diff-review-github-test--by-node "C3")))
       (should (equal (gethash "path" t2) "long.txt"))
@@ -201,7 +201,7 @@ threads GitHub dropped, keeps what was not sent, and follows a push."
                                                  '("C2" "bob" "Because.")
                                                  '("C4" "carol" "Agreed."))
                 (diff-review-github-test--thread "T3" 4 t head '("C5" "carol" "Done."))))
-    (diff-review-github-pull)
+    (diff-review-forge-pull)
     (should (equal (diff-review--git "rev-parse" "pull/5") diff-review--tip))
     (should-not (equal diff-review--tip head))
     (should (equal (mapcar (lambda (f) (plist-get f :path)) diff-review--files)
@@ -216,7 +216,7 @@ threads GitHub dropped, keeps what was not sent, and follows a push."
                       diff-review--comments))
     ;; Reopened on GitHub: GitHub's change wins.
     (setf (alist-get 'isResolved (cadr diff-review-github-test--threads)) :false)
-    (diff-review-github-pull)
+    (diff-review-forge-pull)
     (should-not (gethash "resolved" (diff-review-github-test--by-node "C5")))))
 
 (ert-deftest diff-review-github-test-submit ()
@@ -241,7 +241,7 @@ body, replies and a resolve; then there is nothing left to send."
      (diff-review-github-test--by-node "IC1")
      (lambda (c) (puthash "replies" (vector (diff-review--message "me" "Pong.")) c)))
     (diff-review-approve)
-    (diff-review-github-submit)
+    (diff-review-forge-submit)
     (let ((review (diff-review-github-test--sent "repos/{owner}/{repo}/pulls/5/reviews")))
       (should (equal (gethash "event" review) "APPROVE"))
       (should (equal (gethash "commit_id" review) head))
@@ -257,30 +257,34 @@ body, replies and a resolve; then there is nothing left to send."
       (should (equal (gethash "body" file) "line 15: Far from it.")))
     ;; A thread's reply goes to the thread; only the conversation's is a comment.
     (let ((reply (diff-review-github-test--sent "addPullRequestReviewThreadReply")))
-      (should (equal (diff-review-github--get reply "variables" "thread") "T1"))
-      (should (equal (diff-review-github--get reply "variables" "body") "Ok.")))
+      (should (equal (diff-review-forge--get reply "variables" "thread") "T1"))
+      (should (equal (diff-review-forge--get reply "variables" "body") "Ok.")))
     (should (equal (mapcar (lambda (call) (gethash "body" (cdr call)))
                            (seq-filter (lambda (call)
                                          (member "repos/{owner}/{repo}/issues/5/comments"
                                                  (car call)))
                                        diff-review-github-test--calls))
                    '("> Ping.\n\nPong.")))
-    (should (equal (diff-review-github--get (diff-review-github-test--sent "resolveReviewThread")
+    (should (equal (diff-review-forge--get (diff-review-github-test--sent "resolveReviewThread")
                                             "variables" "id")
                    "T1"))
-    (should (equal (diff-review-github--get diff-review--data "verdict" "github" "state")
+    (should (equal (diff-review-forge--get diff-review--data "verdict" "forge" "state")
                    "approved"))
     ;; The fake GitHub kept none of it, so the pull dropped what was sent.
-    (should (equal (mapcar #'diff-review-github--node diff-review--comments)
+    (should (equal (mapcar #'diff-review-forge--node diff-review--comments)
                    '("C1" "C3" "IC1" "R1")))
-    (should (equal (cadr (should-error (diff-review-github-submit) :type 'user-error))
+    (should (equal (cadr (should-error (diff-review-forge-submit) :type 'user-error))
                    "Nothing to send to #5"))))
 
 (ert-deftest diff-review-github-test-not-a-pull-request ()
-  "The GitHub commands refuse a review that is not of a pull request."
+  "Pull and submit refuse a review of no pull request, and of a backend
+that is not on the load path."
   (diff-review-test--with-repo
     (diff-review-test--open repo)
-    (should-error (diff-review-github-pull) :type 'user-error)
-    (should-error (diff-review-github-submit) :type 'user-error)))
+    (should-error (diff-review-forge-pull) :type 'user-error)
+    (should-error (diff-review-forge-submit) :type 'user-error)
+    (diff-review-forge-mark diff-review--data "backend" "nope" "number" 1)
+    (should (equal (cadr (should-error (diff-review-forge-pull) :type 'user-error))
+                   "No backend nope: diff-review-nope is not on the load path"))))
 
 ;;; diff-review-github-test.el ends here

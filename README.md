@@ -115,39 +115,47 @@ For one half alone:
     '("v" "Review" diff-review-magit-commits)))
 ```
 
-## GitHub pull requests
+## Pull requests
 
-`M-x diff-review-github-pr` reviews a pull request: pick an open one, or type
-its number. Its head is fetched into `refs/pull/N` and its base from
+A pull request on a forge is a review too, its threads kept in step with
+the forge's. A backend per forge does the talking; GitHub's is the one there
+is.
+
+`M-x diff-review-github-pr` reviews a GitHub pull request: pick an open one,
+or type its number. Its head is fetched into `refs/pull/N` and its base from
 `origin`, and the review is `review/github/N.json` under the common git
-directory, following that ref. GitHub's threads come in on the lines they
+directory, following that ref. The forge's threads come in on the lines they
 were written on, so the review follows them to the tip and says when they
 are outdated; a file comment is listed with the file, and the conversation
 and review bodies are threads on the review as a whole.
 
-`M-x diff-review-github-pull` fetches again and brings the threads up to
-GitHub's: its text wins, and its resolved state once it changed there.
+`M-x diff-review-forge-pull` fetches again and brings the threads up to the
+forge's: its text wins, and its resolved state once it changed there.
 Threads and replies not sent yet stay.
 
-`M-x diff-review-github-submit` asks, then sends what was written here. The
-new threads go as one review on the tip the review shows, with the verdict
-(`A` or `C`) as its event and the review-wide threads as its body. GitHub
-takes a line comment only inside the pull request's hunks, so a thread
-outside them goes on its file with its lines in the text, and one on a file
-the pull request leaves alone goes in the body. Replies go to their threads,
-and a thread resolved or reopened here is resolved or reopened there.
+`M-x diff-review-forge-submit` asks, then sends what was written here: new
+threads, replies, threads resolved or reopened, and the verdict (`A` or `C`).
+On GitHub the new threads go as one review on the tip the review shows, the
+verdict its event and the review-wide threads its body. GitHub takes a line
+comment only inside the pull request's hunks, so a thread outside them goes
+on its file with its lines in the text, and one on a file the pull request
+leaves alone goes in the body.
 
-It talks to GitHub through [gh](https://cli.github.com), so `gh auth login`
-is all the setup. A fork's pull requests are usually on `upstream`, and a gh
-that `exec-path` does not find can be named in full:
+The GitHub backend talks through [gh](https://cli.github.com), so `gh auth
+login` is all the setup. A fork's pull requests are usually on `upstream`,
+and a gh that `exec-path` does not find can be named in full:
 
 ```elisp
 (setq diff-review-github-remote "upstream"
       diff-review-github-program "/path/to/gh")
 ```
 
-What came from GitHub carries a `"github"` key in the review file; a thread
-without one has not been sent.
+The review file names its backend, `"forge": {"backend": "github", "number":
+5}`, and what came from the forge carries a `"forge"` key; a thread without
+one has not been sent. A backend for another forge is a file,
+`diff-review-BACKEND.el`, with methods for `diff-review-forge-fetch` and
+`diff-review-forge-send` and an entry point that calls
+`diff-review-forge-open`.
 
 ## Customize
 

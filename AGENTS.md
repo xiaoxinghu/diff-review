@@ -5,6 +5,9 @@
 - One file, `diff-review.el`, plus optional integration files, such as
   `diff-review-magit.el`, for what they integrate with. Only their entry
   points carry autoload cookies, and nothing in `diff-review.el` loads them.
+  Forges share `diff-review-forge.el`, pull and submit, and each is a backend
+  file, `diff-review-github.el`, of its two methods and an entry point; the
+  forge file loads the backend the review file names.
   `diff-review-magit-mode` belongs in an init before magit loads, so that
   file requires only magit-section and edits magit once magit loads. Build
   what the task in hand asks for.
