@@ -23,7 +23,8 @@
 
 - `make check`: byte-compile without warnings, checkdoc, and the ERT tests in
   `test/`. `diff-review.el` and its tests run with magit off the load path;
-  `test/diff-review-magit-test.el` runs on its own, with magit. The tests
+  `test/diff-review-magit-test.el` runs on its own, with magit, and
+  `test/diff-review-github-test.el` on its own, with gh faked in Lisp. The tests
   build a git repository in a temp folder and drive windows in batch Emacs; a
   window change that the redisplay hook would notice is settled by calling
   `diff-review--follow` directly.

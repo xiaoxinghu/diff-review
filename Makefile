@@ -23,7 +23,10 @@ deps: .deps/ok
 check: .deps/ok
 	$(BATCH) --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile diff-review.el
 	$(MAGIT) --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile diff-review-magit.el
-	rm -f diff-review.elc diff-review-magit.elc
-	$(BATCH) --eval '(checkdoc-file "diff-review.el")' --eval '(checkdoc-file "diff-review-magit.el")'
+	$(BATCH) --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile diff-review-github.el
+	rm -f diff-review.elc diff-review-magit.elc diff-review-github.elc
+	$(BATCH) --eval '(checkdoc-file "diff-review.el")' --eval '(checkdoc-file "diff-review-magit.el")' \
+	  --eval '(checkdoc-file "diff-review-github.el")'
 	$(BATCH) -l test/diff-review-test.el -f ert-run-tests-batch-and-exit
+	$(BATCH) -l test/diff-review-github-test.el --eval '(ert-run-tests-batch-and-exit "^diff-review-github-")'
 	$(MAGIT) -l test/diff-review-magit-test.el --eval '(ert-run-tests-batch-and-exit "^diff-review-magit-")'
