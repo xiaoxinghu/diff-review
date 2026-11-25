@@ -250,3 +250,33 @@ jq -r --arg tip "$(git rev-parse feature)" \
 `make check` byte-compiles without warnings, runs checkdoc and the ERT tests.
 The first run fetches magit-section and magit from MELPA into `.deps/`; it
 reads no Emacs config. `EMACS=...` picks the Emacs.
+
+## Buffer display API
+
+`(diff-review-buffer PATCH)` decorates the current buffer without opening a
+review, creating files, changing windows, or installing review-session keys.
+The caller supplies a single text file's zero-context unified patch and a
+buffer containing exactly its new side (empty for a deletion). It preserves
+buffer text and the major mode. Binary patches and buffers already in a review
+session are rejected.
+
+Calling again replaces the decorations. Disable `diff-review-buffer-mode` to
+remove them; editing or changing the major mode also removes them because the
+comparison becomes stale. The caller owns refresh and navigation. The usual
+inline-removed, tint and fringe options apply. `diff-review-toggle-focus` can
+fold unchanged lines. The standalone mode shares the renderer used by
+`diff-review-file-mode`, without its session lifecycle or comments.
+
+### Full-session integration
+
+`(diff-review-open-file REVIEW-FILE PATH ROOT BASE HEAD COMPARISON)` opens a
+relative file path in the selected window, retaining native file-mode keys,
+comments, viewed marks and navigation. It leaves the sidebar hidden.
+COMPARISON is a string: `worktree`, `unstaged`, `staged`, or `range`.
+BASE is exact (callers resolve a merge base themselves); HEAD is a commit for
+ranges and nil otherwise. Use a distinct review JSON file per comparison.
+Staged and unstaged comparisons snapshot the index with `git write-tree`.
+Worktree comparisons include untracked files. Normal files retain their major
+mode and editing tools; staged contents differing from disk use a revision
+buffer. Historical files use the existing worktree/revision selection logic.
+The standalone decoration API above does not provide these session commands.

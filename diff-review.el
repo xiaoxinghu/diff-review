@@ -379,22 +379,40 @@ the branch may have moved on since."
 
 (defun diff-review--scan ()
   "Fill the file vector from git: a handful of calls for any number of files."
-  (setq diff-review--head-name (or diff-review--head
-                                   (diff-review--git "rev-parse" "--abbrev-ref" "HEAD"))
-        diff-review--base
-        (condition-case err
-            (diff-review--git "merge-base" diff-review--base-name
-                              (or diff-review--head "HEAD"))
-          (error (user-error "No merge base with base %S: set \"base\" in the review \
+  (if (gethash "comparison" diff-review--data)
+      (let ((comparison (gethash "comparison" diff-review--data)))
+        (setq diff-review--base
+              (if (equal comparison "unstaged")
+                  (diff-review--git "write-tree")
+                (or (diff-review--git-maybe "rev-parse" "--verify" diff-review--base-name)
+                    (user-error "Unknown base: %s" diff-review--base-name))))
+        (if (equal comparison "staged")
+            (setq diff-review--tip (diff-review--git "write-tree"))
+          (diff-review--follow-tip))
+        (setq diff-review--head-name (or diff-review--head comparison)))
+    (progn
+      (setq diff-review--head-name (or diff-review--head
+                                       (diff-review--git "rev-parse" "--abbrev-ref" "HEAD"))
+            diff-review--base
+            (condition-case err
+		(diff-review--git "merge-base" diff-review--base-name
+				  (or diff-review--head "HEAD"))
+              (error (user-error "No merge base with base %S: set \"base\" in the review \
 file, or `diff-review-default-base' for new reviews (%s)"
-                             diff-review--base-name (error-message-string err)))))
-  (diff-review--follow-tip)
-  (let* ((shown (and diff-review--index   ; keeps its place by path: the index may move
+				 diff-review--base-name (error-message-string err)))))
+      (diff-review--follow-tip) ))
+  (let* ((shown (and diff-review--index	; keeps its place by path: the index may move
                      (< diff-review--index (length diff-review--files))
                      (plist-get (diff-review--file) :path)))
          (changed (diff-review--parse-name-status
                    (apply #'diff-review--git "diff" "--name-status" "-M" "-z"
                           (diff-review--range))))
+         (untracked (when (member (gethash "comparison" diff-review--data)
+                                  '("worktree" "unstaged"))
+                      (split-string (diff-review--git "ls-files" "--others" "--exclude-standard" "-z")
+                                    "\0" t)))
+         (changed (append (seq-remove (lambda (entry) (member (car entry) untracked)) changed)
+                          (mapcar (lambda (path) (list path "A" nil)) untracked)))
          ;; A commented file the diff has not is in the review too, unchanged.
          (commented (diff-review--commented-paths (mapcar #'car changed)))
          (entries (sort (append changed (mapcar (lambda (e) (list (car e) " " nil)) commented))
@@ -414,7 +432,7 @@ file, or `diff-review-default-base' for new reviews (%s)"
            (mapcar (lambda (entry)
                      (pcase-let ((`(,path ,status ,old) entry))
                        (let ((stat (gethash path numstat)))
-                         (list :path path :status status :old old
+                         (list :path path :status status :old old :untracked (member path untracked)
                                :added (or (car stat) 0) :removed (or (cdr stat) 0)
                                :hash (cdr (assoc path hashes))))))
                    entries)))
@@ -1378,7 +1396,12 @@ review buffer must be current."
       (setq buffer (generate-new-buffer name))
       (setf (alist-get name diff-review--blobs nil nil #'equal) buffer))
     (unless (equal (buffer-local-value 'diff-review--blob buffer) key)
-      (let ((contents (diff-review--git "show" (concat rev ":" path)))
+      (let ((contents (let ((default-directory diff-review--root)
+                            (object (concat rev ":" path)))
+                        (with-temp-buffer
+                          (unless (zerop (process-file "git" nil t nil "show" object))
+                            (error "Git show failed: %s" (buffer-string)))
+                          (buffer-string))))
             (root diff-review--root))
         (with-current-buffer buffer
           (let ((inhibit-read-only t))
@@ -1551,8 +1574,22 @@ must be current."
   "The buffer that shows FILE as the review has it, made or brought up to date.
 The review buffer must be current."
   (cond ((equal (plist-get file :status) "D") (diff-review--blob-for file))
+        ((equal (gethash "comparison" diff-review--data) "staged")
+         (let* ((path (expand-file-name (plist-get file :path) diff-review--root))
+                (buffer (and (file-regular-p path) (not (file-symlink-p path))
+                             (diff-review--visit path)))
+                (contents (let ((default-directory diff-review--root)
+                                (object (concat diff-review--tip ":" (plist-get file :path))))
+                            (with-temp-buffer
+                              (unless (zerop (process-file "git" nil t nil "show" object))
+                                (error "Git show failed: %s" (buffer-string)))
+                              (buffer-string)))))
+           (if (and buffer (with-current-buffer buffer
+                             (equal contents (buffer-substring-no-properties (point-min) (point-max)))))
+               buffer
+             (diff-review--blob-for file))))
         (diff-review--head (diff-review--head-buffer file))
-        (t (find-file-noselect (expand-file-name (plist-get file :path) diff-review--root)))))
+        (t (diff-review--visit (expand-file-name (plist-get file :path) diff-review--root)))))
 
 (defun diff-review--refresh-files ()
   "Bring this review's open files up to date after a scan.
@@ -1598,6 +1635,62 @@ Returns its buffer.  The review buffer must be current."
 
 ;;;; The file side
 
+(defvar-local diff-review-buffer-mode nil)
+
+;;;###autoload
+(defun diff-review-buffer (patch)
+  "Decorate the current buffer with a single-file unified PATCH.
+The buffer must contain exactly the new side of PATCH.  Use an empty
+buffer for a deleted file.  PATCH must use zero lines of context and
+must describe a text file.  The caller owns file selection, buffer
+contents and display; no review session or sidebar is created.
+Calling again replaces the decorations.  Editing or reverting the
+buffer removes them, since the supplied comparison would be stale.
+Signal an error rather than taking over a buffer in a review session."
+  (when diff-review-file-mode
+    (user-error "This buffer already belongs to a review"))
+  (when (string-match-p "^\\(?:Binary files .* differ\\|GIT binary patch\\)$" patch)
+    (user-error "Binary patches cannot be displayed inline"))
+  (let (hunks)
+    (with-temp-buffer
+      (insert patch)
+      (goto-char (point-min))
+      (while (re-search-forward diff-hunk-header-re-unified nil t)
+        (let ((line (diff-review--hunk-field 3))
+              (count (diff-review--hunk-field 4)) removed)
+          (forward-line 1)
+          (while (and (not (eobp)) (looking-at "^[-+\\\\]"))
+            (when (looking-at "^-\\(.*\\)$")
+              (push (match-string 1) removed))
+            (forward-line 1))
+          (push (list :line line :count count :removed (nreverse removed)) hunks))))
+    (diff-review-buffer-mode -1)
+    (setq diff-review--hunks (nreverse hunks)
+          diff-review--texts nil
+          diff-review--deleted nil
+          diff-review--focus nil)
+    (diff-review-buffer-mode 1)))
+
+(defun diff-review--buffer-changed (&rest _args)
+  "Remove standalone decorations when their source changes."
+  (diff-review-buffer-mode -1))
+
+(define-minor-mode diff-review-buffer-mode
+  "Standalone inline decorations supplied by `diff-review-buffer'.
+Disable this mode to remove them.  No review-session keys are installed."
+  :lighter " Diff"
+  (if diff-review-buffer-mode
+      (progn
+        (when diff-review-file-mode
+          (setq diff-review-buffer-mode nil)
+          (user-error "This buffer already belongs to a review"))
+        (diff-review--decorate)
+        (add-hook 'after-change-functions #'diff-review--buffer-changed nil t)
+        (add-hook 'change-major-mode-hook #'diff-review--buffer-changed nil t))
+    (diff-review--undecorate)
+    (remove-hook 'after-change-functions #'diff-review--buffer-changed t)
+    (remove-hook 'change-major-mode-hook #'diff-review--buffer-changed t)))
+
 (defun diff-review--parse-hunks (file)
   "Parse `git diff -U0' of FILE into hunk plists, in the review buffer."
   (let ((old (or (plist-get file :old) (plist-get file :path)))
@@ -1605,8 +1698,13 @@ Returns its buffer.  The review buffer must be current."
         (range (diff-review--range))
         hunks)
     (with-temp-buffer
-      (apply #'process-file "git" nil t nil "diff" "-U0" "-M"
-             (append range (list "--" old (plist-get file :path))))
+      (let ((code (if (plist-get file :untracked)
+                      (process-file "git" nil t nil "diff" "--no-index" "--no-color" "-U0"
+                                    "--" "/dev/null" (expand-file-name (plist-get file :path) default-directory))
+                    (apply #'process-file "git" nil t nil "diff" "--no-color" "-U0" "-M"
+                           (append range (list "--" old (plist-get file :path)))))))
+        (unless (if (plist-get file :untracked) (memq code '(0 1)) (eq code 0))
+          (error "Git diff failed: %s" (buffer-string))))
       (goto-char (point-min))
       (while (re-search-forward diff-hunk-header-re-unified nil t)
         (let ((line (diff-review--hunk-field 3))   ; the new side
@@ -1698,7 +1796,8 @@ TINT, a face or nil, goes over the syntax faces."
 (defun diff-review--decorate ()
   "Add the inline removed lines, the added tint, the fringe bars and the folds."
   (diff-review--undecorate)
-  (let* ((inline (diff-review--in-review diff-review--inline-removed))
+  (let* ((inline (if diff-review-buffer-mode diff-review-inline-removed
+                   (diff-review--in-review diff-review--inline-removed)))
          (added (and diff-review-tint-added (diff-review--tint 'diff-review-added 'diff-added)))
          (removed (and diff-review-tint-removed
                        (diff-review--tint 'diff-review-removed 'diff-removed)))
@@ -1710,7 +1809,8 @@ TINT, a face or nil, goes over the syntax faces."
                                         (seq-mapcat (lambda (hunk) (plist-get hunk :removed))
                                                     diff-review--hunks)
                                         major-mode)))))))
-    (diff-review--decorate-comments)   ; first: the folds keep its lines
+    (unless diff-review-buffer-mode
+      (diff-review--decorate-comments))   ; first: the folds keep its lines
     (if diff-review--deleted
         (let ((overlay (make-overlay (point-min) (point-max))))
           (overlay-put overlay 'face removed)
@@ -2310,6 +2410,7 @@ the prefix is needed once, for a run of these keys.
   :lighter " Review"
   (if diff-review-file-mode
       (progn
+        (when diff-review-buffer-mode (diff-review-buffer-mode -1))
         (setq diff-review--hunks
               (if diff-review--deleted
                   (list (list :line 1 :count 0 :removed nil))
@@ -2393,6 +2494,39 @@ caller's choice."
       (json-pretty-print-buffer)
       (insert "\n")))
   (find-file file))
+
+;;;###autoload
+(defun diff-review-open-file (review-file path root base &optional head comparison)
+  "Open PATH in a full review session stored at REVIEW-FILE.
+ROOT is the repository; BASE and HEAD select the exact comparison.
+COMPARISON is a string: range, worktree, unstaged or staged.
+Unlike branch reviews, BASE is used directly, without computing a merge
+base.  The caller selects the display window.  No sidebar is opened.
+Native file-mode navigation, comments and persistence remain available.
+Existing REVIEW-FILE must describe the same comparison."
+  (setq comparison (or comparison "range"))
+  (unless (member comparison '("range" "worktree" "unstaged" "staged"))
+    (user-error "Unknown comparison: %s" comparison))
+  (unless (file-exists-p review-file)
+    (make-directory (file-name-directory review-file) t)
+    (with-temp-file review-file
+      (insert (json-serialize
+               `((format . ,diff-review-format) (root . ,root) (base . ,base)
+                 (head . ,head) (comparison . ,comparison)
+                 (viewed . ,(make-hash-table))) :null-object nil))))
+  (let* ((diff-review-sidebar nil)
+         (review (find-file-noselect review-file)))
+    (with-current-buffer review
+      (unless (derived-mode-p 'diff-review-mode) (diff-review-mode))
+      (unless (and (equal comparison (gethash "comparison" diff-review--data))
+                   (equal base diff-review--base-name) (equal head diff-review--head)
+                   (file-equal-p root diff-review--root))
+        (user-error "Review file belongs to another comparison"))
+      (setq diff-review--sidebar-enabled nil)
+      (diff-review--scan)
+      (let ((index (diff-review--file-index path)))
+        (unless index (user-error "File is not in this comparison: %s" path))
+        (diff-review--open index)))))
 
 (defun diff-review--root-here ()
   "The root of the repository `default-directory' is in, or an error."

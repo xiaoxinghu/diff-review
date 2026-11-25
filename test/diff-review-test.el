@@ -1245,7 +1245,7 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
         (with-current-buffer (window-buffer)
           (should diff-review-file-mode)
           (should-not buffer-file-name)
-          (should (equal (buffer-string) "a\nB\nc\nd\nE\nf")))   ; a blob, without its last newline
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\nf\n")))   ; a blob preserves its last newline
         (should-not (buffer-local-value 'diff-review-file-mode real))
         (should (buffer-modified-p real))
         (with-current-buffer real (revert-buffer t t))
@@ -1257,7 +1257,7 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
         (with-current-buffer (window-buffer)
           (should diff-review-file-mode)
           (should-not buffer-file-name)
-          (should (equal (buffer-string) "a\nB\nc\nd\nE\nf")))
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\nf\n")))
         (should-not (buffer-local-value 'diff-review-file-mode real))
         ;; The same file, with its marks, from inside the worktree.
         (with-current-buffer review (diff-review--set-viewed (diff-review--file 0) t))
@@ -1397,7 +1397,7 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
       (with-current-buffer (window-buffer)
         (should diff-review-file-mode)
         (should-not buffer-file-name)
-        (should (equal (buffer-string) "a\nB\nc\nd\nE"))))))
+        (should (equal (buffer-string) "a\nB\nc\nd\nE\n"))))))
 
 (defun diff-review-test--worktree-entries (repo)
   "The paths `git worktree list' gives for REPO."
@@ -1472,7 +1472,7 @@ a moved tip gets a new worktree, the old one going; the last goes on quit."
         (with-current-buffer review (diff-review--open 1))
         (with-current-buffer (window-buffer)
           (should-not buffer-file-name)
-          (should (equal (buffer-string) "a\nB\nc\nd\nE")))
+          (should (equal (buffer-string) "a\nB\nc\nd\nE\n")))
         (with-current-buffer file (revert-buffer t t))
         (with-current-buffer review (diff-review--open 1))
         (should (eq (window-buffer) file))
@@ -1628,6 +1628,69 @@ file, the overview, the sidebar's and the file's headers."
     (diff-review-test--open repo)
     (should-error (diff-review-approve) :type 'user-error)
     (should-not (diff-review-test--verdict (current-buffer)))))
+
+
+(ert-deftest diff-review-standalone-buffer-lifecycle ()
+  (with-temp-buffer
+    (insert "new\n")
+    (diff-review-buffer "@@ -1 +1 @@\n-old\n+new\n")
+    (should diff-review-buffer-mode)
+    (should-not diff-review-file-mode)
+    (should (equal (buffer-string) "new\n"))
+    (should (string-match-p "old" (overlay-get (car diff-review--overlays) 'before-string)))
+    (let ((old (car diff-review--overlays)))
+      (diff-review-buffer "@@ -1 +1 @@\n-before\n+new\n")
+      (should-not (overlay-buffer old)))
+    (insert "edit")
+    (should-not diff-review-buffer-mode)
+    (should-not diff-review--overlays)))
+
+(ert-deftest diff-review-standalone-deletion-and-cleanup ()
+  (with-temp-buffer
+    (diff-review-buffer "@@ -1 +0,0 @@\n-gone\n")
+    (should (string-match-p "gone" (overlay-get (car diff-review--overlays) 'before-string)))
+    (fundamental-mode)
+    (should-not (overlays-in (point-min) (point-max)))))
+
+(ert-deftest diff-review-standalone-rejects-session-and-binary ()
+  (with-temp-buffer
+    (let ((diff-review-file-mode t))
+      (should-error (diff-review-buffer "")))
+    (should-error (diff-review-buffer "Binary files a and b differ\n"))))
+
+(ert-deftest diff-review-test-public-session-keys-and-file-identity ()
+  (diff-review-test--with-repo
+    (diff-review-test--write "a.txt" "A\nB\nc\nD\ne\n")
+    (let* ((path (expand-file-name "a.txt" repo))
+           (source (find-file-noselect path))
+           (review-file (expand-file-name ".git/native-review.json" repo)))
+      (with-current-buffer source (setq-local diff-review-test-editor-state 'retained))
+      (diff-review-open-file review-file "a.txt" repo "HEAD" nil "worktree")
+      (should (eq (window-buffer) source))
+      (set-buffer source)
+      (should (equal buffer-file-name path))
+      (should-not buffer-read-only)
+      (should (eq (buffer-local-value 'diff-review-test-editor-state source) 'retained))
+      (should (= (line-number-at-pos) 1))
+      (call-interactively (key-binding (kbd "C-c _ n")))
+      (should (= (line-number-at-pos) 4))
+      (call-interactively (key-binding (kbd "C-c _ p")))
+      (should (= (line-number-at-pos) 1))
+      (cl-letf (((symbol-function 'diff-review--read-body) (lambda (&rest _) "Check this")))
+        (call-interactively (key-binding (kbd "C-c _ c"))))
+      (cl-letf (((symbol-function 'diff-review--read-body) (lambda (&rest _) "Reply")))
+        (call-interactively (key-binding (kbd "C-c _ r"))))
+      (call-interactively (key-binding (kbd "C-c _ x")))
+      (with-temp-buffer
+        (insert-file-contents review-file)
+        (let* ((data (json-parse-buffer))
+               (thread (aref (gethash "comments" data) 0)))
+          (should (gethash "resolved" thread))))
+      (goto-char (point-max))
+      (insert "unsaved\n")
+      (should (buffer-modified-p))
+      (should diff-review-file-mode)
+      (set-buffer-modified-p nil))))
 
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here
