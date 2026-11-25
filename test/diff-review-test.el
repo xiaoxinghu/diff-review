@@ -1289,6 +1289,24 @@ files the worktree's own; a commit on the branch is noticed, and a rescan follow
       (should (equal diff-review--head "feat/x"))
       (should (equal diff-review--head-name "feat/x")))))
 
+(ert-deftest diff-review-test-current-branch ()
+  "The branch checked out here is reviewed; the base or a detached HEAD is refused."
+  (diff-review-test--with-repo
+    (let ((wt (diff-review-test--worktree repo "wt" "-b" "feature")))
+      (diff-review-test--commit-in wt "a.txt" "a\nB\nc\nd\nE\n" "feature one")
+      (delete-other-windows)
+      (let ((default-directory repo))
+        (should-error (diff-review-current-branch) :type 'user-error))
+      (let ((default-directory wt))
+        (diff-review-current-branch))
+      (should (diff-review-test--same-file-p
+               buffer-file-name (expand-file-name ".git/review/feature.json" repo)))
+      (should (equal diff-review--head "feature"))
+      (kill-buffer)
+      (let ((default-directory wt))
+        (diff-review-test--git "checkout" "-q" "--detach")
+        (should-error (diff-review-current-branch) :type 'user-error)))))
+
 (ert-deftest diff-review-test-branch-review-outlives-its-worktree ()
   "A review made from a worktree opens from main after the worktree is gone, marks kept."
   (diff-review-test--with-repo

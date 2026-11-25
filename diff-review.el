@@ -2444,5 +2444,17 @@ checked out."
     (diff-review-find-file (diff-review--branch-file root branch)
                            (or (diff-review--main-worktree root) root) nil branch)))
 
+;;;###autoload
+(defun diff-review-current-branch ()
+  "Review the branch checked out here, as `diff-review-branch' does."
+  (interactive)
+  (let* ((root (diff-review--root-here))
+         (default-directory root)
+         (branch (or (diff-review--git-maybe "symbolic-ref" "--quiet" "--short" "HEAD")
+                     (user-error "HEAD is detached, not on a branch"))))
+    (when (equal branch (diff-review--default-base root))
+      (user-error "%s is the base; check out the branch to review" branch))
+    (diff-review-branch branch)))
+
 (provide 'diff-review)
 ;;; diff-review.el ends here

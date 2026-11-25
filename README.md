@@ -29,7 +29,8 @@ opens. The file is `review/<branch>.json` under the `.git` every worktree
 shares, so main's clone and the branch's worktree open the same review and git
 never commits it. The review follows the branch: after a commit, `g` rescans,
 viewed marks clear for the files that changed, and threads follow their lines
-or read outdated.
+or read outdated. `M-x diff-review-current-branch` does the same for the branch
+checked out where you are.
 
 `M-x diff-review-find-file` visits a review file anywhere, creating it when it
 does not exist. Such a review is of the worktree's uncommitted changes against
