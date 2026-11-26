@@ -893,6 +893,13 @@ the hunks keep their overlays, removed lines and moves."
       (should (null (diff-review--thread-overlays)))
       (should (equal (gethash "comments" (diff-review-test--review-json repo)) [])))))
 
+(ert-deftest diff-review-test-buffer-blob-ignores-git-warnings ()
+  "A warning git prints while hashing a file buffer stays out of its blob."
+  (diff-review-test--with-repo
+    (diff-review-test--git "config" "core.autocrlf" "true")   ; LF text makes git warn
+    (diff-review-test--at-a repo)
+    (should (string-match-p "\\`[0-9a-f]\\{40\\}\\'" (diff-review--buffer-blob)))))
+
 (ert-deftest diff-review-test-only-the-thread-at-point-is-open ()
   "A thread draws open while point is on its lines or just under, else as one line."
   (diff-review-test--with-repo

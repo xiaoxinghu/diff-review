@@ -1800,9 +1800,10 @@ something to start from."
           (widen)
           (string-trim
            (with-output-to-string
+             ;; stderr dropped: with -w git may warn there, e.g. about line endings
              (unless (zerop (call-process-region (point-min) (point-max) "git" nil
-                                                 standard-output nil "hash-object" "-w"
-                                                 "--stdin" "--path" path))
+                                                 (list standard-output nil) nil
+                                                 "hash-object" "-w" "--stdin" "--path" path))
                (error "Git hash-object failed"))))))))
 
 (defun diff-review--thread-lines (comment blob)
